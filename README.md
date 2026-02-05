@@ -8,6 +8,8 @@ Rather than a single agent trying to do everything, this system runs a **market*
 
 ---
 
+Compared with a single-agent baseline, market routing solved SnakeLite+Planner in 4 rounds (5/5 tasks) versus 30 rounds (0/8 tasks) in this repo’s benchmark runs.
+
 ## See It In Action
 
 ![Dashboard showing tasks, workers, and live event log](docs/images/dashboard.png)
