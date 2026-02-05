@@ -2,6 +2,8 @@
 
 **A Coordination Layer for AI Agents.**
 
+Repository: [github.com/strangeloopcanon/multi-agent-scaling](https://github.com/strangeloopcanon/multi-agent-scaling)
+
 Rather than a single agent trying to do everything, this system runs a **market** where specialized agents bid, compete, and collaborate to solve complex tasks. It applies economic principles (auctions, reputation, skin-in-the-game) to AI code generation.
 
 ---
