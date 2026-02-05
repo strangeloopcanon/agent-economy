@@ -1,0 +1,190 @@
+scenario_id: compilerlite
+title: "CompilerLite: tiny language compiler + VM + CLI"
+template_dir: templates/compilerlite
+
+tasks:
+  - id: T1_lexer_parser
+    title: "Lexer + parser (let/print + expressions)"
+    description: |
+      Implement a small lexer + parser for the `compilerlite` toy language.
+
+      Public requirements:
+      - Support statements:
+        - `let <ident> = <expr>;`
+        - `print <expr>;`
+      - Support expressions with precedence:
+        - literals: integers (base-10)
+        - variables: identifiers
+        - unary: `-x`
+        - binary: `* / %` higher than `+ -`
+        - parentheses
+      - Ignore whitespace and `# ...` line comments.
+      - Errors must be `CompileError` with line/col information.
+      - Do not modify tests.
+    deps: []
+    bounty: 120
+    acceptance:
+      - python -m pytest -q target/tests/test_lexer.py
+      - python -m pytest -q target/tests/test_parser.py
+    hidden_acceptance:
+      - python -m pytest -q target/tests_hidden/test_lexer_hidden.py
+      - python -m pytest -q target/tests_hidden/test_parser_hidden.py
+    files_hint:
+      - target/compilerlite/lexer.py
+      - target/compilerlite/parser.py
+      - target/compilerlite/ast.py
+      - target/compilerlite/errors.py
+      - target/compilerlite/sexpr.py
+      - target/tests/test_lexer.py
+      - target/tests/test_parser.py
+    allowed_paths:
+      - target/compilerlite/
+
+  - id: T2_codegen_vm
+    title: "Bytecode + VM (let/print execution)"
+    description: |
+      Implement a small stack-based bytecode and VM, and compile+run `let`/`print` programs.
+
+      Public requirements:
+      - `run_source(src)` returns printed lines as `list[str]`.
+      - Integer division is trunc-toward-zero (like C), and `a % b` matches that division.
+      - Runtime errors must raise `VMError` (undefined variables, division by zero).
+      - Keep error messages reasonably informative.
+      - Do not modify tests.
+    deps: [T1_lexer_parser]
+    bounty: 160
+    acceptance:
+      - python -m pytest -q target/tests/test_lexer.py
+      - python -m pytest -q target/tests/test_parser.py
+      - python -m pytest -q target/tests/test_run_basic.py
+    hidden_acceptance:
+      - python -m pytest -q target/tests_hidden/test_run_basic_hidden.py
+    files_hint:
+      - target/compilerlite/api.py
+      - target/compilerlite/compiler.py
+      - target/compilerlite/bytecode.py
+      - target/compilerlite/vm.py
+      - target/tests/test_run_basic.py
+    allowed_paths:
+      - target/compilerlite/
+
+  - id: T3_control_flow
+    title: "Control flow (if/else, while, comparisons)"
+    description: |
+      Add control flow and comparisons.
+
+      Public requirements:
+      - Statements:
+        - `if (<expr>) { <stmts> } else { <stmts> }` (else optional)
+        - `while (<expr>) { <stmts> }`
+      - Comparisons: `== != < <= > >=` produce 1 for true, 0 for false.
+      - Truthiness: 0 is false, nonzero is true.
+      - Do not modify tests.
+    deps: [T2_codegen_vm]
+    bounty: 220
+    acceptance:
+      - python -m pytest -q target/tests/test_control_flow.py
+      - python -m pytest -q target/tests/test_run_basic.py
+    hidden_acceptance:
+      - python -m pytest -q target/tests_hidden/test_control_flow_hidden.py
+    files_hint:
+      - target/compilerlite/parser.py
+      - target/compilerlite/compiler.py
+      - target/compilerlite/vm.py
+      - target/tests/test_control_flow.py
+    allowed_paths:
+      - target/compilerlite/
+
+  - id: T4_errors
+    title: "Errors + robustness (compile/runtime)"
+    description: |
+      Improve errors and robustness.
+
+      Public requirements:
+      - Compile errors should consistently raise `CompileError` with line/col and a human message.
+      - Runtime errors should raise `VMError` with a human message.
+      - Do not modify tests.
+    deps: [T3_control_flow]
+    bounty: 140
+    acceptance:
+      - python -m pytest -q target/tests/test_errors.py
+      - python -m pytest -q target/tests
+    hidden_acceptance:
+      - python -m pytest -q target/tests_hidden/test_errors_hidden.py
+    files_hint:
+      - target/compilerlite/errors.py
+      - target/compilerlite/parser.py
+      - target/compilerlite/vm.py
+      - target/tests/test_errors.py
+    allowed_paths:
+      - target/compilerlite/
+
+  - id: T5_optimizer
+    title: "Optimizer (constant folding)"
+    description: |
+      Add a simple optimizer and expose it via `compile_source(..., optimize=True)`.
+
+      Public requirements:
+      - Constant fold arithmetic + comparisons where both sides are literals.
+      - Behavior must not change.
+      - Do not modify tests.
+    deps: [T3_control_flow]
+    bounty: 150
+    acceptance:
+      - python -m pytest -q target/tests/test_optimizer.py
+      - python -m pytest -q target/tests/test_run_basic.py
+      - python -m pytest -q target/tests/test_control_flow.py
+    hidden_acceptance:
+      - python -m pytest -q target/tests_hidden/test_optimizer_hidden.py
+    files_hint:
+      - target/compilerlite/compiler.py
+      - target/compilerlite/ast.py
+      - target/tests/test_optimizer.py
+    allowed_paths:
+      - target/compilerlite/
+
+  - id: T6_cli
+    title: "CLI: run files"
+    description: |
+      Implement a CLI entrypoint (invoked via `python -m compilerlite`).
+
+      Public requirements:
+      - `python -m compilerlite run <path> [--opt]` executes the program and prints outputs to stdout.
+      - Exit code 0 on success.
+      - Exit code 2 on compile error, 3 on runtime error.
+      - Do not modify tests.
+    deps: [T4_errors, T5_optimizer]
+    bounty: 120
+    acceptance:
+      - python -m pytest -q target/tests/test_cli.py
+    hidden_acceptance:
+      - python -m pytest -q target/tests_hidden/test_cli_hidden.py
+    files_hint:
+      - target/compilerlite/__main__.py
+      - target/compilerlite/api.py
+      - target/tests/test_cli.py
+    allowed_paths:
+      - target/compilerlite/
+
+  - id: T7_docs_readme
+    title: "Docs: arena README usage"
+    description: |
+      Update the arena README with clear usage examples.
+
+      Must include sections:
+      - Language
+      - CLI
+      - Examples
+    deps: [T6_cli]
+    bounty: 60
+    acceptance:
+      - python -c "import pathlib; t=pathlib.Path('README.md').read_text(); assert 'Language' in t and 'CLI' in t and 'Examples' in t"
+      - python -m pytest -q target/tests
+    hidden_acceptance:
+      - python -m pytest -q target/tests_hidden
+    files_hint:
+      - README.md
+      - target/compilerlite/__main__.py
+    allowed_paths:
+      - README.md
+

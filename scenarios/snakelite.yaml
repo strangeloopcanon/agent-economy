@@ -1,0 +1,104 @@
+scenario_id: snakelite
+title: "SnakeLite: replayable Snake game"
+template_dir: templates/snakelite
+
+tasks:
+  - id: T1_game_core
+    title: "Snake game core (movement, collisions, food)"
+    description: |
+      Implement the Snake game core in `target/snakelite/game.py`.
+
+      Rules:
+      - Grid is width x height. Coordinates are (x, y) with (0,0) at top-left.
+      - The snake is a list of points with the head first.
+      - Each step moves the snake 1 cell in its current direction (or the provided action).
+      - If `no_reverse=True`, an action that is the exact opposite of the current direction is ignored.
+      - Collision:
+        - If the next head position would be outside the grid OR collide with the snake body, the game ends:
+          set `alive=False` and do not move the snake for that step.
+      - Food:
+        - If the next head position equals the food position, the snake grows (do not drop the tail),
+          `score += 1`, and new food is spawned from `food_queue` if provided (skip invalid/occupied entries).
+        - If food cannot be spawned (queue exhausted), set `food=None`.
+
+      Do not modify tests.
+    deps: []
+    bounty: 70
+    acceptance:
+      - python -m pytest -q target/tests/test_game.py
+    files_hint:
+      - target/snakelite/types.py
+      - target/snakelite/game.py
+      - target/tests/test_game.py
+    allowed_paths:
+      - target/snakelite/game.py
+
+  - id: T2_replay
+    title: "Replay format + runner"
+    description: |
+      Implement replay parsing and running in `target/snakelite/replay.py`.
+
+      Requirements:
+      - `load_replay(path)` reads JSON and validates basic invariants (bounds, snake non-empty, no duplicates).
+      - `run_replay(replay)` runs moves using `SnakeGame` and returns the final `GameState`.
+      - Moves can be `"U"|"D"|"L"|"R"` or `null` (continue).
+
+      Do not modify tests.
+    deps: [T1_game_core]
+    bounty: 60
+    acceptance:
+      - python -m pytest -q target/tests/test_replay.py
+    files_hint:
+      - target/snakelite/types.py
+      - target/snakelite/game.py
+      - target/snakelite/replay.py
+      - target/tests/test_replay.py
+    allowed_paths:
+      - target/snakelite/replay.py
+
+  - id: T3_render
+    title: "ASCII renderer"
+    description: |
+      Implement ASCII rendering in `target/snakelite/render.py`.
+
+      Requirements:
+      - Render a grid of `height` lines, each `width` characters, plus trailing newline.
+      - Characters:
+        - head: `H`
+        - body: `o`
+        - food: `*`
+        - empty: `.`
+
+      Do not modify tests.
+    deps: []
+    bounty: 40
+    acceptance:
+      - python -m pytest -q target/tests/test_render.py
+    files_hint:
+      - target/snakelite/types.py
+      - target/snakelite/render.py
+      - target/tests/test_render.py
+    allowed_paths:
+      - target/snakelite/render.py
+
+  - id: T4_cli
+    title: "CLI: run replay + print JSON summary"
+    description: |
+      Implement the CLI entrypoint in `target/snakelite/__main__.py`.
+
+      Requirements:
+      - Command: `python -m snakelite replay <path> [--render]`
+      - Print a JSON object on the first line with keys: `alive`, `score`, `steps`, `head` (as [x,y]).
+      - If `--render` is set, print the ASCII board after the JSON line.
+
+      Do not modify tests.
+    deps: [T1_game_core, T2_replay, T3_render]
+    bounty: 70
+    acceptance:
+      - python -m pytest -q target/tests/test_cli.py
+    files_hint:
+      - target/snakelite/__main__.py
+      - target/tests/test_cli.py
+      - target/tests/replays/smoke.json
+    allowed_paths:
+      - target/snakelite/__main__.py

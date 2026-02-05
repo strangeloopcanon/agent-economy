@@ -1,0 +1,10 @@
+{
+  "width": 6,
+  "height": 4,
+  "snake": [[2, 1], [1, 1], [0, 1]],
+  "direction": "R",
+  "food": [4, 1],
+  "food_queue": [[4, 2]],
+  "moves": ["R", "R", "D", "R"]
+}
+

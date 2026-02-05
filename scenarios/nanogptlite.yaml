@@ -1,0 +1,93 @@
+scenario_id: nanogptlite
+title: "nanoGPT-lite: train a tiny character language model"
+template_dir: templates/nanogptlite
+
+tasks:
+  - id: T1_tokenizer
+    title: "Tokenizer: char-level encode/decode"
+    description: |
+      Implement a tiny character-level tokenizer in `target/nanogptlite/tokenizer.py`.
+
+      Requirements:
+      - `CharTokenizer.from_text(text)` builds a vocab from unique characters in `text` (stable ordering).
+      - `encode(text)` returns list[int] ids.
+      - `decode(ids)` returns the original text (round-trip).
+      - Must raise a clear error for unknown characters on encode (tests cover this).
+
+      Do not modify tests.
+    deps: []
+    bounty: 40
+    acceptance:
+      - python -m pytest -q target/tests/test_tokenizer.py
+    files_hint:
+      - target/nanogptlite/tokenizer.py
+      - target/tests/test_tokenizer.py
+    allowed_paths:
+      - target/nanogptlite/tokenizer.py
+
+  - id: T2_bigram_model
+    title: "Model: bigram language model (pure Python)"
+    description: |
+      Implement a tiny bigram language model in `target/nanogptlite/model.py`.
+
+      Requirements:
+      - Parameterize by `vocab_size`.
+      - `loss(ids)` computes average negative log likelihood for next-token prediction.
+      - `train_step(pair, lr)` updates parameters for one (x,y) bigram pair.
+      - Keep it numerically stable enough for tests (use a stable softmax/logsumexp).
+
+      Do not modify tests.
+    deps: []
+    bounty: 60
+    acceptance:
+      - python -m pytest -q target/tests/test_model.py
+    files_hint:
+      - target/nanogptlite/model.py
+      - target/tests/test_model.py
+    allowed_paths:
+      - target/nanogptlite/model.py
+
+  - id: T3_train_loop
+    title: "Training loop: loss goes down"
+    description: |
+      Implement training helpers in `target/nanogptlite/train.py`.
+
+      Requirements:
+      - `train(text, steps, lr, seed)` returns (tokenizer, model, metrics).
+      - Metrics must include at least `initial_loss` and `final_loss`.
+      - Training must be deterministic when `seed` is provided (for test reliability).
+
+      Do not modify tests.
+    deps: [T1_tokenizer, T2_bigram_model]
+    bounty: 70
+    acceptance:
+      - python -m pytest -q target/tests/test_train.py
+    files_hint:
+      - target/nanogptlite/tokenizer.py
+      - target/nanogptlite/model.py
+      - target/nanogptlite/train.py
+      - target/tests/test_train.py
+    allowed_paths:
+      - target/nanogptlite/train.py
+
+  - id: T4_cli
+    title: "CLI: train + emit JSON metrics"
+    description: |
+      Implement a simple CLI in `target/nanogptlite/__main__.py`.
+
+      Requirements:
+      - `python -m nanogptlite train --steps N --lr X --seed S` trains on the built-in dataset and prints JSON metrics.
+      - JSON must include `initial_loss` and `final_loss`.
+
+      Do not modify tests.
+    deps: [T3_train_loop]
+    bounty: 40
+    acceptance:
+      - python -m pytest -q target/tests/test_cli.py
+    files_hint:
+      - target/nanogptlite/__main__.py
+      - target/nanogptlite/data.py
+      - target/tests/test_cli.py
+    allowed_paths:
+      - target/nanogptlite/__main__.py
+

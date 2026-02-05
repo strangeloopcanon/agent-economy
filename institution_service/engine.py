@@ -1,0 +1,930 @@
+from __future__ import annotations
+
+import threading
+import time
+import weakref
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from concurrent.futures import thread as _futures_thread
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass, field
+from typing import Protocol
+
+from institution_service.clearing import BidSubmission, choose_assignments, score_bid
+from institution_service.ledger import HashChainedLedger
+from institution_service.schemas import (
+    ArtifactRef,
+    Bid,
+    DerivedState,
+    DiscussionMessage,
+    EventType,
+    PaymentRule,
+    TaskRuntime,
+    TaskSpec,
+    VerifyMode,
+    VerifyStatus,
+    WorkerRuntime,
+)
+from institution_service.state import SettlementPolicy, replay_ledger
+
+
+@dataclass(frozen=True)
+class ReadyTask:
+    spec: TaskSpec
+    runtime: TaskRuntime
+
+
+@dataclass(frozen=True)
+class BidResult:
+    bids: list[Bid] = field(default_factory=list)
+    llm_usage: dict[str, int] | None = None
+    model_ref: str | None = None
+    discussion: str | None = None
+
+
+class Bidder(Protocol):
+    def get_bids(
+        self,
+        *,
+        worker: WorkerRuntime,
+        ready_tasks: Sequence[ReadyTask],
+        round_id: int,
+        discussion_history: Sequence[DiscussionMessage],
+    ) -> BidResult: ...
+
+
+@dataclass(frozen=True)
+class ExecutionOutcome:
+    status: VerifyStatus
+    notes: str | None = None
+    patch_artifacts: list[ArtifactRef] = field(default_factory=list)
+    verification_artifacts: list[ArtifactRef] = field(default_factory=list)
+    sandbox_rel: str | None = None
+    patch_kind: str | None = None
+    llm_usage: dict[str, int] | None = None
+
+    @property
+    def success(self) -> bool:
+        return self.status == VerifyStatus.PASS
+
+
+class Executor(Protocol):
+    def execute(
+        self,
+        *,
+        worker: WorkerRuntime,
+        task: TaskSpec,
+        bid: Bid,
+        round_id: int,
+        discussion_history: Sequence[DiscussionMessage],
+    ) -> ExecutionOutcome: ...
+
+
+class CostEstimator(Protocol):
+    def expected_cost(
+        self,
+        *,
+        worker: WorkerRuntime,
+        task: TaskSpec,
+        bid: Bid,
+        round_id: int,
+    ) -> float: ...
+
+    def actual_cost(
+        self,
+        *,
+        worker: WorkerRuntime,
+        llm_usage: dict[str, int] | None,
+    ) -> float: ...
+
+
+def _ready_task_ids(*, task_specs: dict[str, TaskSpec], tasks: dict[str, TaskRuntime]) -> list[str]:
+    done = {tid for tid, t in tasks.items() if t.status == "DONE"}
+
+    ready: list[str] = []
+    for tid, rt in tasks.items():
+        if rt.status != "TODO":
+            continue
+        spec = task_specs.get(tid)
+        if spec is None:
+            continue
+        if all(dep in done for dep in spec.deps):
+            ready.append(tid)
+    return sorted(ready)
+
+
+def _bump_bounty(*, task: TaskRuntime) -> int:
+    cap = task.bounty_original * 2
+    bumped = round(task.bounty_current * 1.15)
+    bumped = max(task.bounty_current + 1, bumped)
+    return min(cap, bumped)
+
+
+def _penalty_amount(*, bounty: int, policy: SettlementPolicy) -> int:
+    return min(policy.max_penalty, max(1, round(bounty * policy.penalty_fraction)))
+
+
+def _load_task_specs_from_events(*, events: Iterable) -> dict[str, TaskSpec]:
+    specs: dict[str, TaskSpec] = {}
+    for e in events:
+        if getattr(e, "type", None) != EventType.TASK_CREATED:
+            continue
+        p = getattr(e, "payload", {}) or {}
+        task_id = str(p.get("task_id") or "")
+        if not task_id or task_id in specs:
+            continue
+        try:
+            # TaskSpec expects acceptance as list[CommandSpec], so we allow a simplified
+            # payload format and upgrade it here.
+            acceptance = p.get("acceptance") or []
+            hidden_acceptance = p.get("hidden_acceptance") or []
+            spec = TaskSpec.model_validate(
+                {
+                    "id": task_id,
+                    "title": p.get("title", task_id),
+                    "description": p.get("description", ""),
+                    "deps": p.get("deps", []),
+                    "bounty": int(p.get("bounty", 1)),
+                    "max_attempts": int(p.get("max_attempts", 3)),
+                    "verify_mode": p.get("verify_mode", "commands"),
+                    "judges": p.get("judges"),
+                    "acceptance": acceptance,
+                    "hidden_acceptance": hidden_acceptance,
+                    "allowed_paths": p.get("allowed_paths", ["./"]),
+                    "files_hint": p.get("files_hint", []),
+                    "context": p.get("context"),
+                }
+            )
+        except Exception:
+            continue
+        specs[task_id] = spec
+    return specs
+
+
+@dataclass(frozen=True)
+class EngineSettings:
+    max_concurrency: int = 1
+    max_bids_per_worker: int = 2
+    bid_timeout_seconds: float | None = 30.0
+    execution_timeout_seconds: float | None = 300.0
+
+    # Cost can be added later; keep API stable now.
+    cost_weight: float = 0.0
+
+
+class _DaemonThreadPoolExecutor(ThreadPoolExecutor):
+    """ThreadPoolExecutor variant whose worker threads are daemon threads."""
+
+    def _adjust_thread_count(self) -> None:
+        if self._idle_semaphore.acquire(timeout=0):
+            return
+
+        def weakref_cb(_ref: object, q: object = self._work_queue) -> None:
+            # Wake up workers when the executor is GC'd.
+            q.put(None)
+
+        num_threads = len(self._threads)
+        if num_threads >= self._max_workers:
+            return
+
+        thread_name = f"{self._thread_name_prefix}_{num_threads}"
+        t = threading.Thread(
+            name=thread_name,
+            target=_futures_thread._worker,
+            args=(
+                weakref.ref(self, weakref_cb),
+                self._work_queue,
+                self._initializer,
+                self._initargs,
+            ),
+            daemon=True,
+        )
+        t.start()
+        self._threads.add(t)
+
+
+@dataclass(frozen=True)
+class _InflightBid:
+    future: Future[tuple[BidResult, str | None]]
+    started_at_monotonic: float
+
+
+@dataclass(frozen=True)
+class _InflightExecution:
+    worker_id: str
+    bid: Bid
+    future: Future[ExecutionOutcome]
+    started_at_monotonic: float
+
+
+@dataclass(frozen=True)
+class _CachedBids:
+    bids: list[Bid] = field(default_factory=list)
+
+
+class ClearinghouseEngine:
+    def __init__(
+        self,
+        *,
+        ledger: HashChainedLedger,
+        settlement: SettlementPolicy | None = None,
+        settings: EngineSettings | None = None,
+    ) -> None:
+        self._ledger = ledger
+        self._settlement = settlement or SettlementPolicy()
+        self._settings = settings or EngineSettings()
+        max_workers = max(1, int(self._settings.max_concurrency))
+        self._bid_pool = _DaemonThreadPoolExecutor(
+            max_workers=max_workers, thread_name_prefix="inst_bid"
+        )
+        self._exec_pool = _DaemonThreadPoolExecutor(
+            max_workers=max_workers, thread_name_prefix="inst_exec"
+        )
+        self._inflight_bids: dict[str, _InflightBid] = {}
+        self._bid_cache: dict[str, _CachedBids] = {}
+        self._inflight_exec: dict[str, _InflightExecution] = {}
+
+    def create_run(
+        self,
+        *,
+        run_id: str,
+        payment_rule: PaymentRule = PaymentRule.ASK,
+        workers: Sequence[WorkerRuntime],
+        tasks: Sequence[TaskSpec],
+    ) -> None:
+        # Per-run state: if an engine instance is reused across runs, ensure we
+        # don't carry in-flight futures or cached bids into the next ledger.
+        for inflight in self._inflight_bids.values():
+            inflight.future.cancel()
+        for inflight in self._inflight_exec.values():
+            inflight.future.cancel()
+        self._inflight_bids.clear()
+        self._inflight_exec.clear()
+        self._bid_cache.clear()
+
+        self._ledger.reset()
+        self._ledger.append(
+            EventType.RUN_CREATED,
+            run_id=run_id,
+            round_id=0,
+            payload={"payment_rule": payment_rule.value},
+        )
+
+        for w in workers:
+            self._ledger.append(
+                EventType.WORKER_REGISTERED,
+                run_id=run_id,
+                round_id=0,
+                payload={
+                    "worker_id": w.worker_id,
+                    "worker_type": w.worker_type.value,
+                    "model_ref": w.model_ref,
+                    "balance": w.balance,
+                    "reputation": w.reputation,
+                },
+            )
+
+        for t in tasks:
+            self._ledger.append(
+                EventType.TASK_CREATED,
+                run_id=run_id,
+                round_id=0,
+                payload={
+                    "task_id": t.id,
+                    "title": t.title,
+                    "description": t.description,
+                    "deps": t.deps,
+                    "bounty": t.bounty,
+                    "max_attempts": t.max_attempts,
+                    "verify_mode": t.verify_mode.value,
+                    "judges": None if t.judges is None else t.judges.model_dump(),
+                    # Store as dict so the ledger is tool-agnostic JSON.
+                    "acceptance": [c.model_dump() for c in t.acceptance],
+                    "hidden_acceptance": [c.model_dump() for c in t.hidden_acceptance],
+                    "allowed_paths": t.allowed_paths,
+                    "files_hint": t.files_hint,
+                    "context": None if t.context is None else t.context.model_dump(),
+                },
+            )
+
+        self._ledger.verify_chain()
+
+    def inject_task(self, *, run_id: str, round_id: int, task: TaskSpec) -> None:
+        """
+        Injects a new task into an existing run.
+        """
+        self._ledger.append(
+            EventType.TASK_CREATED,
+            run_id=run_id,
+            round_id=round_id,
+            payload={
+                "task_id": task.id,
+                "title": task.title,
+                "description": task.description,
+                "deps": task.deps,
+                "bounty": task.bounty,
+                "max_attempts": task.max_attempts,
+                "verify_mode": task.verify_mode.value,
+                "judges": None if task.judges is None else task.judges.model_dump(),
+                "acceptance": [c.model_dump() for c in task.acceptance],
+                "hidden_acceptance": [c.model_dump() for c in task.hidden_acceptance],
+                "allowed_paths": task.allowed_paths,
+                "files_hint": task.files_hint,
+                "context": None if task.context is None else task.context.model_dump(),
+            },
+        )
+
+    def _settle_attempt(
+        self,
+        *,
+        state: DerivedState,
+        task_specs: dict[str, TaskSpec],
+        run_id: str,
+        round_id: int,
+        executor: Executor,
+        cost_estimator: CostEstimator | None,
+        task_id: str,
+        worker_id: str,
+        bid: Bid,
+        outcome: ExecutionOutcome,
+    ) -> DerivedState:
+        task_spec = task_specs.get(task_id)
+        if task_spec is None:
+            return state
+
+        cur_task = state.tasks.get(task_id)
+        cur_worker = state.workers.get(worker_id)
+        if (
+            cur_task is None
+            or cur_worker is None
+            or cur_task.status != "ASSIGNED"
+            or cur_task.assigned_worker != worker_id
+            or cur_worker.assigned_task != task_id
+        ):
+            return state
+
+        bounty_before = cur_task.bounty_current
+        base_amount_before = (
+            int(bounty_before) if state.payment_rule == PaymentRule.BOUNTY else int(bid.ask)
+        )
+
+        if outcome.status == VerifyStatus.PASS:
+            integrate_fn = getattr(executor, "integrate", None)
+            if callable(integrate_fn):
+                try:
+                    outcome = integrate_fn(
+                        worker=cur_worker,
+                        task=task_spec,
+                        bid=bid,
+                        round_id=round_id,
+                        outcome=outcome,
+                    )
+                except Exception as e:
+                    outcome = ExecutionOutcome(
+                        status=VerifyStatus.INFRA,
+                        notes=f"integrate_exception={type(e).__name__}: {e}",
+                        patch_artifacts=list(outcome.patch_artifacts),
+                        verification_artifacts=list(outcome.verification_artifacts),
+                        sandbox_rel=outcome.sandbox_rel,
+                        patch_kind=outcome.patch_kind,
+                        llm_usage=outcome.llm_usage,
+                    )
+
+        holdback_amount = 0.0
+        if outcome.status == VerifyStatus.PASS and task_spec.verify_mode == VerifyMode.JUDGES:
+            frac = float(self._settlement.judges_holdback_fraction)
+            frac = max(0.0, min(1.0, frac))
+            holdback_amount = round(float(base_amount_before) * frac, 2)
+            holdback_amount = min(float(base_amount_before), max(0.0, holdback_amount))
+
+        self._ledger.append(
+            EventType.PATCH_SUBMITTED,
+            run_id=run_id,
+            round_id=round_id,
+            payload={
+                "task_id": task_id,
+                "worker_id": worker_id,
+                "notes": outcome.notes,
+                "model_ref": cur_worker.model_ref,
+                "llm_usage": outcome.llm_usage,
+            },
+            artifacts=outcome.patch_artifacts,
+        )
+
+        usage_cost = 0.0
+        if cost_estimator is not None:
+            try:
+                usage_cost = float(
+                    cost_estimator.actual_cost(worker=cur_worker, llm_usage=outcome.llm_usage)
+                )
+            except Exception:
+                usage_cost = 0.0
+        if usage_cost > 0:
+            self._ledger.append(
+                EventType.PENALTY_APPLIED,
+                run_id=run_id,
+                round_id=round_id,
+                payload={
+                    "task_id": task_id,
+                    "worker_id": worker_id,
+                    "amount": usage_cost,
+                    "reason": "usage_cost",
+                    "model_ref": cur_worker.model_ref,
+                    "llm_usage": outcome.llm_usage,
+                },
+            )
+
+        verify_event_type = (
+            EventType.VERIFICATION_PASSED
+            if outcome.status == VerifyStatus.PASS
+            else (
+                EventType.MANUAL_REVIEW_REQUIRED
+                if outcome.status == VerifyStatus.MANUAL_REVIEW
+                else EventType.VERIFICATION_FAILED
+            )
+        )
+        self._ledger.append(
+            verify_event_type,
+            run_id=run_id,
+            round_id=round_id,
+            payload={
+                "task_id": task_id,
+                "worker_id": worker_id,
+                "status": outcome.status.value,
+            },
+            artifacts=outcome.verification_artifacts,
+        )
+        self._ledger.append(
+            EventType.TASK_COMPLETED,
+            run_id=run_id,
+            round_id=round_id,
+            payload={
+                "task_id": task_id,
+                "worker_id": worker_id,
+                "success": outcome.success,
+                "verify_status": outcome.status.value,
+                "bid": bid.model_dump(),
+                "bounty_current": bounty_before,
+                "holdback_amount": holdback_amount,
+                "sandbox": outcome.sandbox_rel,
+                "patch_kind": outcome.patch_kind,
+            },
+        )
+
+        if outcome.status == VerifyStatus.PASS:
+            bounty = bounty_before
+            base_amount = (
+                float(bounty) if state.payment_rule == PaymentRule.BOUNTY else float(bid.ask)
+            )
+            holdback = min(base_amount, float(holdback_amount))
+            amount = max(0.0, base_amount - holdback)
+            if amount > 0.0:
+                self._ledger.append(
+                    EventType.PAYMENT_MADE,
+                    run_id=run_id,
+                    round_id=round_id,
+                    payload={
+                        "task_id": task_id,
+                        "worker_id": worker_id,
+                        "amount": amount,
+                        "payment_rule": state.payment_rule.value,
+                        "bounty": bounty,
+                        "ask": bid.ask,
+                        "holdback": holdback,
+                    },
+                )
+        elif outcome.status == VerifyStatus.FAIL:
+            bounty = bounty_before
+            penalty = _penalty_amount(bounty=bounty, policy=self._settlement)
+            self._ledger.append(
+                EventType.PENALTY_APPLIED,
+                run_id=run_id,
+                round_id=round_id,
+                payload={"task_id": task_id, "worker_id": worker_id, "amount": penalty},
+            )
+
+            next_fail_count = int(cur_task.fail_count) + 1
+            replan_threshold = int(getattr(self._settlement, "replan_fail_threshold", 0) or 0)
+            if replan_threshold > 0 and next_fail_count == replan_threshold:
+                self._ledger.append(
+                    EventType.PLAN_REVISION_REQUESTED,
+                    run_id=run_id,
+                    round_id=round_id,
+                    payload={
+                        "task_id": task_id,
+                        "fail_count": next_fail_count,
+                        "reason": "repeated_failures",
+                    },
+                )
+                self._ledger.append(
+                    EventType.DISCUSSION_POST,
+                    run_id=run_id,
+                    round_id=round_id,
+                    payload={
+                        "sender": "system",
+                        "message": f"Task {task_id} has failed {next_fail_count} times; consider revising the plan or splitting the task.",
+                    },
+                )
+            if next_fail_count > 0 and next_fail_count % 2 == 0:
+                new_bounty = min(
+                    cur_task.bounty_original * 2,
+                    max(bounty + 1, round(bounty * 1.10)),
+                )
+                if new_bounty != bounty:
+                    self._ledger.append(
+                        EventType.BOUNTY_ADJUSTED,
+                        run_id=run_id,
+                        round_id=round_id,
+                        payload={
+                            "task_id": task_id,
+                            "bounty_current": new_bounty,
+                            "reason": "repeated_failures",
+                        },
+                    )
+
+        return replay_ledger(events=list(self._ledger.iter_events()), settlement=self._settlement)
+
+    def step(
+        self,
+        *,
+        bidder: Bidder,
+        executor: Executor,
+        cost_estimator: CostEstimator | None = None,
+    ) -> None:
+        def _timed_out(*, started_at: float, timeout_seconds: float | None) -> bool:
+            if timeout_seconds is None or timeout_seconds <= 0:
+                return False
+            return (time.monotonic() - started_at) >= timeout_seconds
+
+        while True:
+            events = list(self._ledger.iter_events())
+            self._ledger.verify_chain()
+
+            state = replay_ledger(events=events, settlement=self._settlement)
+            task_specs = _load_task_specs_from_events(events=events)
+
+            round_id = state.round_id
+            run_id = state.run_id
+
+            did_any = False
+
+            # Finalize any completed executions.
+            for task_id, inflight in list(self._inflight_exec.items()):
+                timed_out = _timed_out(
+                    started_at=inflight.started_at_monotonic,
+                    timeout_seconds=self._settings.execution_timeout_seconds,
+                )
+                if not inflight.future.done() and not timed_out:
+                    continue
+                self._inflight_exec.pop(task_id, None)
+                if timed_out and not inflight.future.done():
+                    inflight.future.cancel()
+                    timeout_seconds = self._settings.execution_timeout_seconds
+                    timeout_s = 0.0 if timeout_seconds is None else float(timeout_seconds)
+                    outcome = ExecutionOutcome(
+                        status=VerifyStatus.INFRA,
+                        notes=f"executor_timeout_after_s={timeout_s:g}",
+                    )
+                else:
+                    try:
+                        outcome = inflight.future.result()
+                    except Exception as e:
+                        outcome = ExecutionOutcome(
+                            status=VerifyStatus.INFRA,
+                            notes=f"executor_exception={type(e).__name__}: {e}",
+                        )
+                state = self._settle_attempt(
+                    state=state,
+                    task_specs=task_specs,
+                    run_id=run_id,
+                    round_id=round_id,
+                    executor=executor,
+                    cost_estimator=cost_estimator,
+                    task_id=task_id,
+                    worker_id=inflight.worker_id,
+                    bid=inflight.bid,
+                    outcome=outcome,
+                )
+                did_any = True
+
+            # Finalize any completed bid fetches.
+            for worker_id, inflight in list(self._inflight_bids.items()):
+                timed_out = _timed_out(
+                    started_at=inflight.started_at_monotonic,
+                    timeout_seconds=self._settings.bid_timeout_seconds,
+                )
+                if not inflight.future.done() and not timed_out:
+                    continue
+                self._inflight_bids.pop(worker_id, None)
+                if timed_out and not inflight.future.done():
+                    inflight.future.cancel()
+                    timeout_seconds = self._settings.bid_timeout_seconds
+                    timeout_s = 0.0 if timeout_seconds is None else float(timeout_seconds)
+                    resp, bidder_error = BidResult(), f"bidder_timeout_after_s={timeout_s:g}"
+                else:
+                    try:
+                        resp, bidder_error = inflight.future.result()
+                    except Exception as e:
+                        resp, bidder_error = BidResult(), f"{type(e).__name__}: {e}"
+
+                worker = state.workers.get(worker_id)
+                if worker is None or worker.assigned_task is not None:
+                    continue
+
+                bids: list[Bid] = []
+                for raw in list(resp.bids or []):
+                    if isinstance(raw, Bid):
+                        bids.append(raw)
+                    else:
+                        try:
+                            bids.append(Bid.model_validate(raw))
+                        except Exception:
+                            continue
+                bids = list(bids)[: self._settings.max_bids_per_worker]
+
+                self._ledger.append(
+                    EventType.BID_SUBMITTED,
+                    run_id=run_id,
+                    round_id=round_id,
+                    payload={
+                        "worker_id": worker.worker_id,
+                        "model_ref": resp.model_ref or worker.model_ref,
+                        "llm_usage": resp.llm_usage,
+                        "bids": [b.model_dump() for b in bids],
+                        **({} if bidder_error is None else {"error": bidder_error}),
+                    },
+                )
+
+                if resp.discussion:
+                    self._ledger.append(
+                        EventType.DISCUSSION_POST,
+                        run_id=run_id,
+                        round_id=round_id,
+                        payload={
+                            "sender": worker.worker_id,
+                            "message": resp.discussion,
+                        },
+                    )
+
+                bid_usage_cost = 0.0
+                if cost_estimator is not None:
+                    try:
+                        bid_usage_cost = float(
+                            cost_estimator.actual_cost(worker=worker, llm_usage=resp.llm_usage)
+                        )
+                    except Exception:
+                        bid_usage_cost = 0.0
+                if bid_usage_cost > 0:
+                    self._ledger.append(
+                        EventType.PENALTY_APPLIED,
+                        run_id=run_id,
+                        round_id=round_id,
+                        payload={
+                            "worker_id": worker.worker_id,
+                            "amount": bid_usage_cost,
+                            "reason": "bid_usage_cost",
+                            "model_ref": resp.model_ref or worker.model_ref,
+                            "llm_usage": resp.llm_usage,
+                        },
+                    )
+
+                self._bid_cache[worker.worker_id] = _CachedBids(
+                    bids=bids,
+                )
+                did_any = True
+
+            if did_any:
+                events = list(self._ledger.iter_events())
+                state = replay_ledger(events=events, settlement=self._settlement)
+                task_specs = _load_task_specs_from_events(events=events)
+
+            ready_ids = _ready_task_ids(task_specs=task_specs, tasks=state.tasks)
+            available_workers = [w for w in state.workers.values() if w.assigned_task is None]
+
+            ready_views: list[ReadyTask] = [
+                ReadyTask(spec=task_specs[tid], runtime=state.tasks[tid])
+                for tid in ready_ids
+                if tid in task_specs and tid in state.tasks
+            ]
+
+            # Start bid fetches for idle workers that don't have cached bids yet.
+            if ready_views:
+
+                def _fetch_bids(worker: WorkerRuntime) -> tuple[BidResult, str | None]:
+                    try:
+                        resp = bidder.get_bids(
+                            worker=worker,
+                            ready_tasks=ready_views,
+                            round_id=round_id,
+                            discussion_history=state.discussion_history,
+                        )
+                        return resp, None
+                    except Exception as e:
+                        return BidResult(), f"{type(e).__name__}: {e}"
+
+                for w in sorted(available_workers, key=lambda ww: ww.worker_id):
+                    if w.worker_id in self._bid_cache:
+                        continue
+                    if w.worker_id in self._inflight_bids:
+                        continue
+
+                    fut = self._bid_pool.submit(_fetch_bids, w)
+                    self._inflight_bids[w.worker_id] = _InflightBid(
+                        future=fut,
+                        started_at_monotonic=time.monotonic(),
+                    )
+
+            slots = max(0, int(self._settings.max_concurrency) - len(self._inflight_exec))
+            has_any_cached = any(w.worker_id in self._bid_cache for w in available_workers)
+            if slots > 0 and ready_ids and available_workers and has_any_cached:
+                bids_by_task: dict[str, list[BidSubmission]] = {tid: [] for tid in ready_ids}
+                any_bid_for_task: dict[str, bool] = {tid: False for tid in ready_ids}
+
+                for w in available_workers:
+                    cached = self._bid_cache.get(w.worker_id)
+                    if cached is None:
+                        continue
+                    seen: set[str] = set()
+                    for bid in list(cached.bids)[: self._settings.max_bids_per_worker]:
+                        if bid.task_id in seen:
+                            continue
+                        seen.add(bid.task_id)
+                        if bid.task_id not in bids_by_task:
+                            continue
+                        expected_cost = 0.0
+                        if cost_estimator is not None and bid.task_id in task_specs:
+                            try:
+                                expected_cost = float(
+                                    cost_estimator.expected_cost(
+                                        worker=w,
+                                        task=task_specs[bid.task_id],
+                                        bid=bid,
+                                        round_id=round_id,
+                                    )
+                                )
+                            except Exception:
+                                expected_cost = 0.0
+                        bids_by_task[bid.task_id].append(
+                            BidSubmission(
+                                worker_id=w.worker_id,
+                                bid=bid,
+                                expected_cost=expected_cost,
+                            )
+                        )
+                        any_bid_for_task[bid.task_id] = True
+
+                ready_tasks = [state.tasks[tid] for tid in ready_ids if tid in state.tasks]
+                assignments = choose_assignments(
+                    ready_tasks=ready_tasks,
+                    available_workers=available_workers,
+                    bids_by_task=bids_by_task,
+                )
+                self._ledger.append(
+                    EventType.MARKET_CLEARED,
+                    run_id=run_id,
+                    round_id=round_id,
+                    payload={
+                        "assignments": [
+                            {
+                                "task_id": a.task_id,
+                                "worker_id": a.worker_id,
+                                "bid": a.bid.model_dump(),
+                                "score": a.score,
+                                "expected_cost": a.expected_cost,
+                            }
+                            for a in assignments
+                        ]
+                    },
+                )
+                did_any = True
+
+                assigned_task_ids = {a.task_id for a in assignments}
+                for tid in ready_ids:
+                    if tid in assigned_task_ids:
+                        continue
+                    task = state.tasks[tid]
+                    had_any = any_bid_for_task[tid]
+                    best_score = None
+                    if had_any:
+                        scores: list[float] = []
+                        for sub in bids_by_task[tid]:
+                            rep = state.workers[sub.worker_id].reputation
+                            scores.append(
+                                score_bid(
+                                    bounty=task.bounty_current,
+                                    reputation=rep,
+                                    bid=sub.bid,
+                                    expected_cost=sub.expected_cost,
+                                )
+                            )
+                        best_score = max(scores) if scores else None
+                    if (not had_any) or (best_score is None) or (best_score <= 0):
+                        new_bounty = _bump_bounty(task=task)
+                        if new_bounty != task.bounty_current:
+                            self._ledger.append(
+                                EventType.BOUNTY_ADJUSTED,
+                                run_id=run_id,
+                                round_id=round_id,
+                                payload={
+                                    "task_id": tid,
+                                    "bounty_current": new_bounty,
+                                    "reason": "no_winning_bids",
+                                },
+                            )
+
+                def _run_execute(
+                    cur_worker: WorkerRuntime,
+                    cur_task: TaskSpec,
+                    cur_bid: Bid,
+                    history: Sequence[DiscussionMessage],
+                ) -> ExecutionOutcome:
+                    return executor.execute(
+                        worker=cur_worker,
+                        task=cur_task,
+                        bid=cur_bid,
+                        round_id=round_id,
+                        discussion_history=history,
+                    )
+
+                for assignment in list(assignments[:slots]):
+                    task_id = assignment.task_id
+                    worker_id = assignment.worker_id
+                    task_spec = task_specs.get(task_id)
+                    worker = state.workers.get(worker_id)
+                    if task_spec is None or worker is None:
+                        continue
+                    if task_id in self._inflight_exec:
+                        continue
+
+                    self._ledger.append(
+                        EventType.TASK_ASSIGNED,
+                        run_id=run_id,
+                        round_id=round_id,
+                        payload={
+                            "task_id": task_id,
+                            "worker_id": worker_id,
+                            "bid": assignment.bid.model_dump(),
+                            "score": assignment.score,
+                            "expected_cost": assignment.expected_cost,
+                        },
+                    )
+                    self._bid_cache.pop(worker_id, None)
+
+                    fut = self._exec_pool.submit(
+                        _run_execute,
+                        worker,
+                        task_spec,
+                        assignment.bid,
+                        state.discussion_history,
+                    )
+                    self._inflight_exec[task_id] = _InflightExecution(
+                        worker_id=worker_id,
+                        bid=assignment.bid,
+                        future=fut,
+                        started_at_monotonic=time.monotonic(),
+                    )
+
+            if did_any:
+                self._ledger.append(
+                    EventType.ROUND_ADVANCED,
+                    run_id=run_id,
+                    round_id=round_id + 1,
+                    payload={"round_id": round_id + 1},
+                )
+                self._ledger.verify_chain()
+                # Keep bidding responsive to bounty adjustments / new ready tasks.
+                self._bid_cache.clear()
+                return
+
+            inflight: list[Future[object]] = []
+            inflight.extend([b.future for b in self._inflight_bids.values()])
+            inflight.extend([e.future for e in self._inflight_exec.values()])
+            if not inflight:
+                return
+
+            wait_timeout: float | None = None
+            deadline_candidates: list[float] = []
+            if (
+                self._settings.bid_timeout_seconds is not None
+                and self._settings.bid_timeout_seconds > 0
+            ):
+                for inflight_bid in self._inflight_bids.values():
+                    if inflight_bid.future.done():
+                        continue
+                    deadline_candidates.append(
+                        inflight_bid.started_at_monotonic + self._settings.bid_timeout_seconds
+                    )
+            if (
+                self._settings.execution_timeout_seconds is not None
+                and self._settings.execution_timeout_seconds > 0
+            ):
+                for inflight_exec in self._inflight_exec.values():
+                    if inflight_exec.future.done():
+                        continue
+                    deadline_candidates.append(
+                        inflight_exec.started_at_monotonic
+                        + self._settings.execution_timeout_seconds
+                    )
+            if deadline_candidates:
+                wait_timeout = max(0.0, min(deadline_candidates) - time.monotonic())
+
+            wait(inflight, timeout=wait_timeout, return_when=FIRST_COMPLETED)

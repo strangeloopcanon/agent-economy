@@ -1,0 +1,83 @@
+scenario_id: routerlite_parallel
+title: "routerLite: parallel mini router"
+template_dir: templates/routerlite
+
+tasks:
+  - id: T1_request_parse
+    title: "Request: parse raw HTTP-ish text"
+    description: |
+      Implement request parsing in `target/routerlite/request.py`.
+
+      Goal:
+      - Parse method, path, headers, and body from a raw request string.
+      - Support both LF and CRLF input.
+      - Normalize header names to lowercase.
+      - Strip surrounding whitespace from header values.
+    deps: []
+    bounty: 60
+    acceptance:
+      - python -m pytest -q target/tests/test_request.py
+    files_hint:
+      - target/routerlite/request.py
+      - target/tests/test_request.py
+    allowed_paths:
+      - target/routerlite/request.py
+
+  - id: T2_router_match
+    title: "Router: match routes + path params"
+    description: |
+      Implement route registration + matching in `target/routerlite/router.py`.
+
+      Goal:
+      - Register routes by method + pattern.
+      - Match incoming (method, path) to a handler + extracted params.
+      - Support `:param` segments (e.g., `/users/:id`).
+    deps: []
+    bounty: 70
+    acceptance:
+      - python -m pytest -q target/tests/test_router.py
+    files_hint:
+      - target/routerlite/router.py
+      - target/tests/test_router.py
+    allowed_paths:
+      - target/routerlite/router.py
+
+  - id: T3_response_format
+    title: "Response: build HTTP-ish response text"
+    description: |
+      Implement response formatting in `target/routerlite/response.py`.
+
+      Goal:
+      - Build a deterministic response string with CRLF newlines.
+      - Always include `Content-Length`.
+      - Preserve any user-provided headers.
+    deps: []
+    bounty: 50
+    acceptance:
+      - python -m pytest -q target/tests/test_response.py
+    files_hint:
+      - target/routerlite/response.py
+      - target/tests/test_response.py
+    allowed_paths:
+      - target/routerlite/response.py
+
+  - id: T4_server_handle
+    title: "Server: handle request using Router"
+    description: |
+      Implement request handling in `target/routerlite/server.py`.
+
+      Goal:
+      - Parse the request.
+      - Match a route.
+      - Call the handler with `(request, **params)` and build a response.
+      - If no route matches, return a 404.
+    deps: [T1_request_parse, T2_router_match, T3_response_format]
+    bounty: 80
+    acceptance:
+      - python -m pytest -q target/tests
+    files_hint:
+      - target/routerlite/server.py
+      - target/tests/test_server.py
+    allowed_paths:
+      - target/routerlite/server.py
+

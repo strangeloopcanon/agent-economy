@@ -1,0 +1,149 @@
+scenario_id: kvlite
+title: "kvLite: KV store + TTL + persistence + CLI"
+template_dir: templates/kvlite
+
+tasks:
+  - id: T1_basic_store
+    title: "KVStore: set/get/delete/keys"
+    description: |
+      Implement a small in-memory key-value store in `target/kvlite/store.py`.
+
+      Public spec:
+      - `KVStore.__init__(now: Callable[[], float] | None = None)` uses `now()` as its time source (default: `time.time`).
+      - `set(key: str, value: str, ttl: float|None = None)` stores a string value; `ttl` is seconds from set-time.
+      - `get(key: str, default: str|None = None)` returns the stored value or default if missing/expired.
+      - `delete(key: str)` deletes a key and returns whether it existed (not expired at delete-time).
+      - `keys(prefix: str|None = None)` returns sorted keys (lexicographic) filtered by prefix; expired keys must not appear.
+
+      Notes:
+      - There may be private checks beyond public tests; implement the spec robustly.
+      - Do not modify tests.
+    deps: []
+    bounty: 40
+    acceptance:
+      - python -m pytest -q target/tests/test_basic.py
+    hidden_acceptance:
+      - python -m pytest -q target/tests_hidden/test_basic_hidden.py
+    files_hint:
+      - target/kvlite/store.py
+      - target/tests/test_basic.py
+    allowed_paths:
+      - target/kvlite/
+
+  - id: T2_ttl_semantics
+    title: "KVStore: TTL semantics + lazy expiry"
+    description: |
+      Add correct TTL behavior.
+
+      Public spec additions:
+      - Keys with TTL expire when `now() >= set_time + ttl`.
+      - Expired keys must behave as missing for `get`, `delete`, and `keys`.
+      - Expired keys may be removed lazily (on access).
+      - Setting an existing key resets its TTL.
+    deps: [T1_basic_store]
+    bounty: 90
+    acceptance:
+      - python -m pytest -q target/tests/test_basic.py
+      - python -m pytest -q target/tests/test_ttl.py
+    hidden_acceptance:
+      - python -m pytest -q target/tests_hidden/test_basic_hidden.py
+      - python -m pytest -q target/tests_hidden/test_ttl_hidden.py
+    files_hint:
+      - target/kvlite/store.py
+      - target/tests/test_ttl.py
+    allowed_paths:
+      - target/kvlite/
+
+  - id: T3_persistence_dump_load
+    title: "KVStore: dump/load with remaining TTL"
+    description: |
+      Implement persistence in `target/kvlite/store.py`.
+
+      Public spec:
+      - `dump(path)` saves all non-expired keys.
+      - Persist TTL as **remaining TTL**, not absolute time.
+      - `load(path, now=...)` restores keys and remaining TTLs.
+      - Use a single JSON file format; store a top-level object with an `items` list.
+    deps: [T2_ttl_semantics]
+    bounty: 120
+    acceptance:
+      - python -m pytest -q target/tests/test_basic.py
+      - python -m pytest -q target/tests/test_ttl.py
+      - python -m pytest -q target/tests/test_persist.py
+    hidden_acceptance:
+      - python -m pytest -q target/tests_hidden/test_basic_hidden.py
+      - python -m pytest -q target/tests_hidden/test_ttl_hidden.py
+      - python -m pytest -q target/tests_hidden/test_persist_hidden.py
+    files_hint:
+      - target/kvlite/store.py
+      - target/tests/test_persist.py
+    allowed_paths:
+      - target/kvlite/
+
+  - id: T4_cli_commands
+    title: "CLI: set/get/delete/keys with --db"
+    description: |
+      Implement the CLI in `target/kvlite/cli.py` (invoked via `python -m kvlite`).
+
+      Public spec:
+      - All commands accept `--db <path>`.
+      - `set k v --db path [--ttl seconds]` writes to the db and exits 0.
+      - `get k --db path` prints the value + newline and exits 0 if found; exits 1 if missing.
+      - `keys --db path [--prefix p]` prints keys one per line in sorted order.
+      - `delete k --db path` exits 0 if key deleted, else exits 1.
+    deps: [T3_persistence_dump_load]
+    bounty: 110
+    acceptance:
+      - python -m pytest -q target/tests/test_cli.py
+    hidden_acceptance:
+      - python -m pytest -q target/tests_hidden/test_cli_hidden.py
+    files_hint:
+      - target/kvlite/cli.py
+      - target/kvlite/__main__.py
+      - target/kvlite/store.py
+      - target/tests/test_cli.py
+    allowed_paths:
+      - target/kvlite/
+
+  - id: T5_refactor_clean_api
+    title: "Refactor: clean API + robustness"
+    description: |
+      Improve code quality and robustness without changing externally visible behavior.
+
+      Targets:
+      - Keep time-injection for determinism.
+      - Ensure lazy expiry is consistent across all operations.
+      - Keep JSON format stable (versioned object).
+    deps: [T4_cli_commands]
+    bounty: 70
+    acceptance:
+      - python -m pytest -q target/tests
+    hidden_acceptance:
+      - python -m pytest -q target/tests_hidden
+    files_hint:
+      - target/kvlite/store.py
+      - target/kvlite/cli.py
+      - target/tests
+    allowed_paths:
+      - target/kvlite/
+
+  - id: T6_docs_readme
+    title: "Docs: arena README usage"
+    description: |
+      Update `README.md` in the arena with clear usage examples.
+
+      Must include sections:
+      - Usage
+      - TTL
+      - Persistence
+    deps: [T4_cli_commands]
+    bounty: 40
+    acceptance:
+      - python -c "import pathlib; t=pathlib.Path('README.md').read_text(); assert 'Usage' in t and 'TTL' in t and 'Persistence' in t"
+      - python -m pytest -q target/tests
+    hidden_acceptance:
+      - python -m pytest -q target/tests_hidden
+    files_hint:
+      - README.md
+    allowed_paths:
+      - README.md

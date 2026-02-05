@@ -1,0 +1,4 @@
+[
+  { "worker_id": "qwen-3b-local", "model_ref": "ollama:qwen3:3b" },
+  { "worker_id": "qwen-8b-local", "model_ref": "ollama:qwen3:8b" }
+]

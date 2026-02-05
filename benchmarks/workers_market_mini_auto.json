@@ -1,0 +1,5 @@
+[
+  { "worker_id": "gpt-5-mini", "model_ref": "gpt-5-mini" },
+  { "worker_id": "gpt-5.2", "model_ref": "gpt-5.2" },
+  { "worker_id": "gpt-5.2-xhigh", "model_ref": "gpt-5.2-pro" }
+]

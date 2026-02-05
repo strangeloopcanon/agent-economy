@@ -1,0 +1,8 @@
+[
+  {
+    "worker_id": "noop",
+    "exec_cmd": "python benchmarks/noop_exec.py",
+    "bid_cmd": "python benchmarks/noop_bidder.py"
+  }
+]
+

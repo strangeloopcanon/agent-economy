@@ -1,0 +1,43 @@
+scenario_id: swebench_semver_bug
+title: "SWE-bench mini: semver pre-release ordering bug"
+template_dir: templates/swebench_semver
+
+tasks:
+  - id: T1_fix_semver_prerelease
+    title: "Fix SemVer pre-release numeric ordering"
+    description: |
+      You are fixing a real bug report (SWE-bench style).
+
+      Issue:
+      Our `semverlite` comparator sorts pre-release versions incorrectly when a pre-release identifier
+      contains numeric segments.
+
+      Example:
+      - Correct SemVer order: `1.0.0-alpha.2` < `1.0.0-alpha.10`
+      - Current behavior incorrectly treats `"10"` as less than `"2"` in some cases.
+
+      Requirements:
+      - Follow SemVer 2.0.0 precedence rules for pre-release identifiers:
+        - Compare major/minor/patch numerically.
+        - A version without pre-release has higher precedence than one with pre-release.
+        - Pre-release identifiers are compared left-to-right:
+          - Numeric identifiers are compared numerically.
+          - Numeric identifiers have lower precedence than non-numeric.
+          - Non-numeric identifiers are compared lexicographically (ASCII).
+          - If all identifiers equal so far, shorter pre-release has lower precedence.
+        - Build metadata (`+...`) must not affect precedence.
+      - Keep parsing strict enough to reject clearly invalid versions (tests cover this).
+      - Do not modify tests.
+    deps: []
+    bounty: 90
+    acceptance:
+      - python -m pytest -q target/tests
+    hidden_acceptance:
+      - python -m pytest -q target/tests_hidden
+    files_hint:
+      - target/semverlite/version.py
+      - target/semverlite/__init__.py
+      - target/tests/test_semver_compare.py
+    allowed_paths:
+      - target/semverlite/
+

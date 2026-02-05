@@ -1,0 +1,98 @@
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+import time
+from dataclasses import dataclass
+from pathlib import Path
+
+from institution_service.schemas import CommandSpec
+
+
+@dataclass(frozen=True)
+class CommandResult:
+    cmd: str
+    returncode: int
+    stdout: str
+    stderr: str
+    duration_s: float
+    timed_out: bool
+    expected_exit_codes: list[int]
+
+    @property
+    def passed(self) -> bool:
+        return (not self.timed_out) and self.returncode in set(self.expected_exit_codes)
+
+
+def _base_env(*, scrub_secrets: bool) -> dict[str, str]:
+    env = dict(os.environ)
+    env.setdefault("PYTHONHASHSEED", "0")
+    exe = Path(sys.executable)
+    python_bin = str(exe.parent)
+    if not exe.parent.exists():
+        python_bin = str(exe.resolve().parent)
+    path = env.get("PATH", "")
+    env["PATH"] = python_bin + os.pathsep + path if path else python_bin
+    if scrub_secrets:
+        for key in list(env.keys()):
+            if key in {"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY"}:
+                env.pop(key, None)
+                continue
+            if key.endswith("_API_KEY") or key.endswith("_TOKEN"):
+                env.pop(key, None)
+    return env
+
+
+def run_commands(
+    *,
+    commands: list[CommandSpec],
+    cwd: Path,
+    scrub_secrets: bool = True,
+) -> list[CommandResult]:
+    results: list[CommandResult] = []
+    for spec in commands:
+        env = _base_env(scrub_secrets=scrub_secrets)
+        if spec.env:
+            env.update({str(k): str(v) for k, v in spec.env.items()})
+
+        start = time.time()
+        try:
+            proc = subprocess.run(
+                spec.cmd,
+                cwd=cwd,
+                env=env,
+                shell=True,
+                text=True,
+                capture_output=True,
+                timeout=spec.timeout_sec,
+                check=False,
+            )
+            results.append(
+                CommandResult(
+                    cmd=spec.cmd,
+                    returncode=int(proc.returncode),
+                    stdout=proc.stdout,
+                    stderr=proc.stderr,
+                    duration_s=time.time() - start,
+                    timed_out=False,
+                    expected_exit_codes=list(spec.expect_exit_codes),
+                )
+            )
+        except subprocess.TimeoutExpired as e:
+            results.append(
+                CommandResult(
+                    cmd=spec.cmd,
+                    returncode=124,
+                    stdout=str(e.stdout or ""),
+                    stderr=str(e.stderr or ""),
+                    duration_s=time.time() - start,
+                    timed_out=True,
+                    expected_exit_codes=list(spec.expect_exit_codes),
+                )
+            )
+    return results
+
+
+def all_passed(results: list[CommandResult]) -> bool:
+    return all(r.passed for r in results)
