@@ -19,7 +19,9 @@ from institution_service.engine import (
     ClearinghouseEngine,
     EngineSettings,
     ReadyTask,
+    _confidence_penalty_amount,
     _load_task_specs_from_events,
+    _penalty_amount,
 )
 from institution_service.ledger import HashChainedLedger
 from institution_service.llm_openai import OpenAIJSONClient
@@ -50,7 +52,7 @@ from institution_service.schemas import (
     WorkerRuntime,
     WorkerType,
 )
-from institution_service.state import replay_ledger
+from institution_service.state import SettlementPolicy, replay_ledger
 from institution_service.cost_estimator import ExpectedCostEstimator
 from institution_service.costing import load_pricing_from_env
 from institution_service.finalize import release_judges_holdbacks
@@ -1665,13 +1667,43 @@ def main(argv: list[str] | None = None) -> int:
                 },
             )
             if status == VerifyStatus.FAIL:
-                penalty = max(1, round(rt.bounty_current * 0.10))
-                penalty = min(10, penalty)
+                bid = (getattr(completed, "payload", {}) or {}).get("bid") or {}
+                reported_p_success = 0.5
+                if isinstance(bid, dict):
+                    try:
+                        reported_p_success = float(
+                            bid.get("self_assessed_p_success")
+                            or bid.get("p_success")
+                            or bid.get("confidence")
+                            or reported_p_success
+                        )
+                    except Exception:
+                        reported_p_success = 0.5
+                policy = SettlementPolicy()
+                base_penalty = _penalty_amount(
+                    bounty=int(rt.bounty_current),
+                    policy=policy,
+                )
+                confidence_penalty = _confidence_penalty_amount(
+                    base_penalty=base_penalty,
+                    p_success=reported_p_success,
+                    policy=policy,
+                )
+                penalty = int(base_penalty + confidence_penalty)
                 ledger.append(
                     EventType.PENALTY_APPLIED,
                     run_id=run_id,
                     round_id=round_id,
-                    payload={"task_id": task_id, "worker_id": worker_id, "amount": penalty},
+                    payload={
+                        "task_id": task_id,
+                        "worker_id": worker_id,
+                        "amount": penalty,
+                        "reason": "verification_fail",
+                        "base_penalty": base_penalty,
+                        "confidence_penalty": confidence_penalty,
+                        "reported_p_success": reported_p_success,
+                        "confidence_penalty_floor": float(policy.confidence_penalty_floor),
+                    },
                 )
 
                 state_mid = replay_ledger(events=list(ledger.iter_events()))

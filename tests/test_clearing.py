@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from institution_service.clearing import BidSubmission, choose_assignments
+from institution_service.clearing import BidSubmission, choose_assignments, score_bid_breakdown
 from institution_service.schemas import Bid, TaskRuntime, WorkerRuntime
 
 
@@ -54,3 +54,20 @@ def test_expected_cost_can_change_winner() -> None:
     )
     assert len(assignments) == 1
     assert assignments[0].worker_id == "cheap"
+
+
+def test_score_bid_breakdown_contains_components() -> None:
+    bid = Bid(task_id="T1", ask=12, self_assessed_p_success=0.8, eta_minutes=15)
+    breakdown = score_bid_breakdown(
+        bounty=100,
+        reputation=1.0,
+        bid=bid,
+        expected_cost=3.0,
+    )
+    assert breakdown["bounty"] == 100.0
+    assert breakdown["reputation"] == 1.0
+    assert breakdown["p_success"] == 0.8
+    assert breakdown["ask"] == 12.0
+    assert breakdown["expected_cost"] == 3.0
+    assert "failure_penalty" in breakdown
+    assert "score" in breakdown

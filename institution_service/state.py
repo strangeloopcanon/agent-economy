@@ -31,6 +31,8 @@ class SettlementPolicy:
 
     max_penalty: int = 10
     penalty_fraction: float = 0.10
+    confidence_penalty_floor: float = 0.5
+    confidence_penalty_max_multiplier: float = 1.0
 
     # Trigger plan revision after a task fails this many times (0 = disabled).
     replan_fail_threshold: int = 3
