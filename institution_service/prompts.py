@@ -55,6 +55,9 @@ def bid_prompt(
     lines.append("Settlement notes:")
     lines.append("- usage_cost is always debited after an attempt (pass or fail).")
     lines.append(
+        "- Overconfident failures are penalized more: higher reported p_success increases fail penalties."
+    )
+    lines.append(
         "- For judges verification, part of payout is held back until the whole run completes."
     )
     lines.append(f"Constraints: at most {max_bids} bids this round.")

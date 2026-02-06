@@ -9,7 +9,11 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol
 
-from institution_service.clearing import BidSubmission, choose_assignments, score_bid
+from institution_service.clearing import (
+    BidSubmission,
+    choose_assignments,
+    score_bid_breakdown,
+)
 from institution_service.ledger import HashChainedLedger
 from institution_service.schemas import (
     ArtifactRef,
@@ -123,6 +127,40 @@ def _penalty_amount(*, bounty: int, policy: SettlementPolicy) -> int:
     return min(policy.max_penalty, max(1, round(bounty * policy.penalty_fraction)))
 
 
+def _confidence_penalty_amount(
+    *,
+    base_penalty: int,
+    p_success: float,
+    policy: SettlementPolicy,
+) -> int:
+    floor = float(getattr(policy, "confidence_penalty_floor", 0.5))
+    floor = max(0.0, min(1.0, floor))
+    max_multiplier = float(getattr(policy, "confidence_penalty_max_multiplier", 0.0))
+    max_multiplier = max(0.0, max_multiplier)
+    p = max(0.0, min(1.0, float(p_success)))
+    if max_multiplier <= 0 or p <= floor or floor >= 1.0:
+        return 0
+    slope = (p - floor) / (1.0 - floor)
+    return max(0, round(float(base_penalty) * max_multiplier * slope))
+
+
+def _score_snapshot_payload(*, breakdown: dict[str, float] | None) -> dict[str, object] | None:
+    if not breakdown:
+        return None
+    return {
+        "formula": "rep*p_success*bounty - ask - expected_cost - (1-p_success)*failure_penalty",
+        "components": {
+            "bounty": float(breakdown.get("bounty", 0.0)),
+            "reputation": float(breakdown.get("reputation", 0.0)),
+            "p_success": float(breakdown.get("p_success", 0.0)),
+            "ask": float(breakdown.get("ask", 0.0)),
+            "expected_cost": float(breakdown.get("expected_cost", 0.0)),
+            "failure_penalty": float(breakdown.get("failure_penalty", 0.0)),
+            "score": float(breakdown.get("score", 0.0)),
+        },
+    }
+
+
 def _load_task_specs_from_events(*, events: Iterable) -> dict[str, TaskSpec]:
     specs: dict[str, TaskSpec] = {}
     for e in events:
@@ -212,6 +250,9 @@ class _InflightBid:
 class _InflightExecution:
     worker_id: str
     bid: Bid
+    score: float
+    expected_cost: float
+    score_breakdown: dict[str, float] | None
     future: Future[ExecutionOutcome]
     started_at_monotonic: float
 
@@ -345,6 +386,9 @@ class ClearinghouseEngine:
         task_id: str,
         worker_id: str,
         bid: Bid,
+        award_score: float | None,
+        award_expected_cost: float | None,
+        award_score_breakdown: dict[str, float] | None,
         outcome: ExecutionOutcome,
     ) -> DerivedState:
         task_spec = task_specs.get(task_id)
@@ -467,6 +511,11 @@ class ClearinghouseEngine:
                 "holdback_amount": holdback_amount,
                 "sandbox": outcome.sandbox_rel,
                 "patch_kind": outcome.patch_kind,
+                "award_score": None if award_score is None else float(award_score),
+                "award_expected_cost": (
+                    None if award_expected_cost is None else float(award_expected_cost)
+                ),
+                "award_score_snapshot": _score_snapshot_payload(breakdown=award_score_breakdown),
             },
         )
 
@@ -494,12 +543,29 @@ class ClearinghouseEngine:
                 )
         elif outcome.status == VerifyStatus.FAIL:
             bounty = bounty_before
-            penalty = _penalty_amount(bounty=bounty, policy=self._settlement)
+            base_penalty = _penalty_amount(bounty=bounty, policy=self._settlement)
+            confidence_penalty = _confidence_penalty_amount(
+                base_penalty=base_penalty,
+                p_success=float(bid.self_assessed_p_success),
+                policy=self._settlement,
+            )
+            penalty = int(base_penalty + confidence_penalty)
             self._ledger.append(
                 EventType.PENALTY_APPLIED,
                 run_id=run_id,
                 round_id=round_id,
-                payload={"task_id": task_id, "worker_id": worker_id, "amount": penalty},
+                payload={
+                    "task_id": task_id,
+                    "worker_id": worker_id,
+                    "amount": penalty,
+                    "reason": "verification_fail",
+                    "base_penalty": base_penalty,
+                    "confidence_penalty": confidence_penalty,
+                    "reported_p_success": float(bid.self_assessed_p_success),
+                    "confidence_penalty_floor": float(
+                        getattr(self._settlement, "confidence_penalty_floor", 0.5)
+                    ),
+                },
             )
 
             next_fail_count = int(cur_task.fail_count) + 1
@@ -602,6 +668,9 @@ class ClearinghouseEngine:
                     task_id=task_id,
                     worker_id=inflight.worker_id,
                     bid=inflight.bid,
+                    award_score=inflight.score,
+                    award_expected_cost=inflight.expected_cost,
+                    award_score_breakdown=inflight.score_breakdown,
                     outcome=outcome,
                 )
                 did_any = True
@@ -790,6 +859,9 @@ class ClearinghouseEngine:
                                 "bid": a.bid.model_dump(),
                                 "score": a.score,
                                 "expected_cost": a.expected_cost,
+                                "score_snapshot": _score_snapshot_payload(
+                                    breakdown=a.score_breakdown
+                                ),
                             }
                             for a in assignments
                         ]
@@ -808,14 +880,13 @@ class ClearinghouseEngine:
                         scores: list[float] = []
                         for sub in bids_by_task[tid]:
                             rep = state.workers[sub.worker_id].reputation
-                            scores.append(
-                                score_bid(
-                                    bounty=task.bounty_current,
-                                    reputation=rep,
-                                    bid=sub.bid,
-                                    expected_cost=sub.expected_cost,
-                                )
+                            score_info = score_bid_breakdown(
+                                bounty=task.bounty_current,
+                                reputation=rep,
+                                bid=sub.bid,
+                                expected_cost=sub.expected_cost,
                             )
+                            scores.append(float(score_info["score"]))
                         best_score = max(scores) if scores else None
                     if (not had_any) or (best_score is None) or (best_score <= 0):
                         new_bounty = _bump_bounty(task=task)
@@ -865,6 +936,9 @@ class ClearinghouseEngine:
                             "bid": assignment.bid.model_dump(),
                             "score": assignment.score,
                             "expected_cost": assignment.expected_cost,
+                            "score_snapshot": _score_snapshot_payload(
+                                breakdown=assignment.score_breakdown
+                            ),
                         },
                     )
                     self._bid_cache.pop(worker_id, None)
@@ -879,6 +953,9 @@ class ClearinghouseEngine:
                     self._inflight_exec[task_id] = _InflightExecution(
                         worker_id=worker_id,
                         bid=assignment.bid,
+                        score=float(assignment.score),
+                        expected_cost=float(assignment.expected_cost),
+                        score_breakdown=assignment.score_breakdown,
                         future=fut,
                         started_at_monotonic=time.monotonic(),
                     )

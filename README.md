@@ -56,6 +56,7 @@ failure_penalty = 0.5*bounty*clamp((rep - 0.5)/0.75, 0, 1)
 *   **Failure Penalty**: Scaled by reputation.
     *   New workers (rep 0.5) → **0% penalty** (allows recovery).
     *   Established workers (rep 1.25) → **50% penalty** (skin-in-the-game).
+*   **Overconfidence Penalty (`P0-lite`)**: If a worker fails, an extra penalty is applied based on reported `p_success` (higher confidence → higher fail penalty).
 
 ### Execution & Settlement
 *   **Sandboxing**: Every attempt runs in a fresh copy of the workspace.
@@ -77,6 +78,7 @@ failure_penalty = 0.5*bounty*clamp((rep - 0.5)/0.75, 0, 1)
 *   **Robustness via redundancy**: If one agent fails, the market penalizes them and re-opens the task. Another agent steps in.
 *   **Specialization**: Cheap models for simple tasks, expensive models for hard ones. The market routes automatically.
 *   **Auditability**: Every bid, patch, and verification outcome is recorded in an append-only JSONL ledger.
+*   **Decision Snapshots**: Market clearing and task assignment events include score components so downstream analysis can explain why a worker was selected.
 *   **Iterative Planning**: If tasks fail repeatedly, the system triggers a **Plan Revision** event.
 
 ---
@@ -213,6 +215,12 @@ institution-service dashboard --run-dir runs/my-active-run
 ```bash
 institution-service init --scenario scenarios/snakelite.yaml --run-dir runs/bench
 institution-service run --run-dir runs/bench
+```
+
+### Export RL Transitions
+Export each attempt as a transition tuple (`action`, `award`, `outcome`, `reward`) for offline training/evaluation:
+```bash
+python scripts/export_transitions.py runs/my-active-run --jsonl > runs/my-active-run/transitions.jsonl
 ```
 
 ---

@@ -243,7 +243,7 @@ def test_engine_rounds_settlement_and_bounty_bumps(tmp_path) -> None:
     assert state.workers["w2"].balance == 10.0
     assert state.workers["w2"].reputation > 1.0
 
-    # T2 clears to w1, fails, penalty 10, rep down.
+    # T2 clears to w1, fails, base penalty 10 + confidence penalty 10 (p_success=1.0).
     for _ in range(5):
         engine.step(bidder=bidder, executor=executor)
         state = replay_ledger(events=list(ledger.iter_events()))
@@ -251,7 +251,7 @@ def test_engine_rounds_settlement_and_bounty_bumps(tmp_path) -> None:
             break
     assert state.tasks["T2"].status == "TODO"
     assert state.tasks["T2"].fail_count == 1
-    assert state.workers["w1"].balance == -10.0
+    assert state.workers["w1"].balance == -20.0
     assert state.workers["w1"].reputation < 1.0
 
     # T2 fails again; after 2nd failure bounty bumps by 10% (100 -> 110).
@@ -262,7 +262,13 @@ def test_engine_rounds_settlement_and_bounty_bumps(tmp_path) -> None:
             break
     assert state.tasks["T2"].fail_count == 2
     assert state.tasks["T2"].bounty_current == 110
-    assert state.workers["w1"].balance == -20.0
+    assert state.workers["w1"].balance == -40.0
+
+    penalty_events = [e for e in ledger.iter_events() if e.type == EventType.PENALTY_APPLIED]
+    fail_penalties = [e for e in penalty_events if e.payload.get("reason") == "verification_fail"]
+    assert fail_penalties
+    assert fail_penalties[0].payload.get("base_penalty") == 10
+    assert fail_penalties[0].payload.get("confidence_penalty") == 10
 
 
 def test_engine_manual_review_does_not_settle(tmp_path) -> None:
@@ -489,3 +495,32 @@ def test_engine_executor_timeout_becomes_infra_without_failure_penalty(tmp_path)
     assert state.tasks["T1"].fail_count == 0
     assert state.workers["w1"].failures == 0
     assert state.workers["w1"].reputation == 1.0
+
+
+def test_engine_emits_scoring_snapshots_for_market_and_assignment(tmp_path) -> None:
+    ledger = HashChainedLedger(tmp_path / "ledger.jsonl")
+    engine = ClearinghouseEngine(ledger=ledger, settings=EngineSettings(max_concurrency=1))
+
+    tasks = [
+        TaskSpec(id="T1", title="t1", bounty=100, deps=[], acceptance=[CommandSpec(cmd="true")])
+    ]
+    workers = [WorkerRuntime(worker_id="w1", reputation=1.0)]
+    engine.create_run(run_id="run-1", payment_rule=PaymentRule.ASK, workers=workers, tasks=tasks)
+
+    bidder = ScriptedBidder(
+        {(0, "w1"): [Bid(task_id="T1", ask=20, self_assessed_p_success=0.9, eta_minutes=10)]}
+    )
+    executor = ScriptedExecutor()
+
+    engine.step(bidder=bidder, executor=executor)
+    events = list(ledger.iter_events())
+    market = [e for e in events if e.type == EventType.MARKET_CLEARED]
+    assigned = [e for e in events if e.type == EventType.TASK_ASSIGNED]
+    assert market and assigned
+
+    market_snapshot = ((market[-1].payload.get("assignments") or [])[0] or {}).get("score_snapshot")
+    assigned_snapshot = assigned[-1].payload.get("score_snapshot")
+    assert isinstance(market_snapshot, dict)
+    assert isinstance(assigned_snapshot, dict)
+    assert market_snapshot.get("components", {}).get("score") is not None
+    assert assigned_snapshot.get("components", {}).get("score") is not None
