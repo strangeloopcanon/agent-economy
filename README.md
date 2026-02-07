@@ -143,6 +143,9 @@ Set these in `.env` or your shell to configure defaults:
 
 ## Advanced Usage
 
+### Use From Another Repo
+See [`docs/cross_repo_integration.md`](docs/cross_repo_integration.md) for a copy-pasteable integration playbook (CLI, engine API, and RL wrapper patterns).
+
 ### Full Task Command
 ```bash
 institution-service task "Fix the failing tests" \
