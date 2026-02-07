@@ -14,7 +14,7 @@ from institution_service.clearing import (
     choose_assignments,
     score_bid_breakdown,
 )
-from institution_service.ledger import HashChainedLedger
+from institution_service.ledger import Ledger
 from institution_service.schemas import (
     ArtifactRef,
     Bid,
@@ -66,6 +66,18 @@ class ExecutionOutcome:
     patch_kind: str | None = None
     llm_usage: dict[str, int] | None = None
 
+    def with_status(self, status: VerifyStatus, notes: str | None = None) -> ExecutionOutcome:
+        """Return a copy with a different status (and optionally notes)."""
+        return ExecutionOutcome(
+            status=status,
+            notes=notes if notes is not None else self.notes,
+            patch_artifacts=list(self.patch_artifacts),
+            verification_artifacts=list(self.verification_artifacts),
+            sandbox_rel=self.sandbox_rel,
+            patch_kind=self.patch_kind,
+            llm_usage=self.llm_usage,
+        )
+
     @property
     def success(self) -> bool:
         return self.status == VerifyStatus.PASS
@@ -99,6 +111,24 @@ class CostEstimator(Protocol):
         worker: WorkerRuntime,
         llm_usage: dict[str, int] | None,
     ) -> float: ...
+
+
+class Verifier(Protocol):
+    """Programmatic verification adapter.
+
+    When provided to ClearinghouseEngine, called after execution to
+    determine the final verify status -- overriding whatever the executor
+    returned.  Intended for reward models, Prime Intellect evaluators,
+    or any callable verification logic.
+    """
+
+    def verify(
+        self,
+        *,
+        task: TaskSpec,
+        worker: WorkerRuntime,
+        outcome: ExecutionOutcome,
+    ) -> VerifyStatus: ...
 
 
 def _ready_task_ids(*, task_specs: dict[str, TaskSpec], tasks: dict[str, TaskRuntime]) -> list[str]:
@@ -161,6 +191,10 @@ def _score_snapshot_payload(*, breakdown: dict[str, float] | None) -> dict[str, 
     }
 
 
+def _infra_outcome(notes: str) -> ExecutionOutcome:
+    return ExecutionOutcome(status=VerifyStatus.INFRA, notes=notes)
+
+
 def _load_task_specs_from_events(*, events: Iterable) -> dict[str, TaskSpec]:
     specs: dict[str, TaskSpec] = {}
     for e in events:
@@ -207,6 +241,28 @@ class EngineSettings:
 
     # Cost can be added later; keep API stable now.
     cost_weight: float = 0.0
+
+    # When True, bypasses ThreadPoolExecutor and calls bidder/executor
+    # synchronously.  Eliminates thread overhead and non-determinism for
+    # RL training loops where max_concurrency=1.
+    deterministic: bool = False
+
+
+class _SynchronousExecutor:
+    """Executor that calls functions immediately, returning resolved futures.
+
+    Used in deterministic mode to eliminate thread overhead and ensure
+    fully reproducible event sequences for RL training.
+    """
+
+    def submit(self, fn: object, /, *args: object, **kwargs: object) -> Future:
+        future: Future = Future()
+        try:
+            result = fn(*args, **kwargs)  # type: ignore[operator]
+            future.set_result(result)
+        except Exception as exc:
+            future.set_exception(exc)
+        return future
 
 
 class _DaemonThreadPoolExecutor(ThreadPoolExecutor):
@@ -266,20 +322,30 @@ class ClearinghouseEngine:
     def __init__(
         self,
         *,
-        ledger: HashChainedLedger,
+        ledger: Ledger,
         settlement: SettlementPolicy | None = None,
         settings: EngineSettings | None = None,
+        verifier: Verifier | None = None,
     ) -> None:
         self._ledger = ledger
         self._settlement = settlement or SettlementPolicy()
         self._settings = settings or EngineSettings()
-        max_workers = max(1, int(self._settings.max_concurrency))
-        self._bid_pool = _DaemonThreadPoolExecutor(
-            max_workers=max_workers, thread_name_prefix="inst_bid"
-        )
-        self._exec_pool = _DaemonThreadPoolExecutor(
-            max_workers=max_workers, thread_name_prefix="inst_exec"
-        )
+        self._verifier = verifier
+        if self._settings.deterministic:
+            self._bid_pool: _DaemonThreadPoolExecutor | _SynchronousExecutor = (
+                _SynchronousExecutor()
+            )
+            self._exec_pool: _DaemonThreadPoolExecutor | _SynchronousExecutor = (
+                _SynchronousExecutor()
+            )
+        else:
+            max_workers = max(1, int(self._settings.max_concurrency))
+            self._bid_pool = _DaemonThreadPoolExecutor(
+                max_workers=max_workers, thread_name_prefix="inst_bid"
+            )
+            self._exec_pool = _DaemonThreadPoolExecutor(
+                max_workers=max_workers, thread_name_prefix="inst_exec"
+            )
         self._inflight_bids: dict[str, _InflightBid] = {}
         self._bid_cache: dict[str, _CachedBids] = {}
         self._inflight_exec: dict[str, _InflightExecution] = {}
@@ -423,15 +489,31 @@ class ClearinghouseEngine:
                         outcome=outcome,
                     )
                 except Exception as e:
-                    outcome = ExecutionOutcome(
-                        status=VerifyStatus.INFRA,
+                    outcome = outcome.with_status(
+                        VerifyStatus.INFRA,
                         notes=f"integrate_exception={type(e).__name__}: {e}",
-                        patch_artifacts=list(outcome.patch_artifacts),
-                        verification_artifacts=list(outcome.verification_artifacts),
-                        sandbox_rel=outcome.sandbox_rel,
-                        patch_kind=outcome.patch_kind,
-                        llm_usage=outcome.llm_usage,
                     )
+
+        # Verifier override: when an external verifier is injected, it gets
+        # the final say on the verification status.  This lets reward models,
+        # Prime Intellect evaluators, or any callable replace the executor's
+        # built-in verification.
+        if self._verifier is not None:
+            try:
+                overridden = self._verifier.verify(
+                    task=task_spec,
+                    worker=cur_worker,
+                    outcome=outcome,
+                )
+                if not isinstance(overridden, VerifyStatus):
+                    overridden = VerifyStatus(str(overridden))
+                if overridden != outcome.status:
+                    outcome = outcome.with_status(overridden)
+            except Exception as e:
+                outcome = outcome.with_status(
+                    VerifyStatus.INFRA,
+                    notes=f"verifier_exception={type(e).__name__}: {e}",
+                )
 
         holdback_amount = 0.0
         if outcome.status == VerifyStatus.PASS and task_spec.verify_mode == VerifyMode.JUDGES:
@@ -646,18 +728,12 @@ class ClearinghouseEngine:
                     inflight.future.cancel()
                     timeout_seconds = self._settings.execution_timeout_seconds
                     timeout_s = 0.0 if timeout_seconds is None else float(timeout_seconds)
-                    outcome = ExecutionOutcome(
-                        status=VerifyStatus.INFRA,
-                        notes=f"executor_timeout_after_s={timeout_s:g}",
-                    )
+                    outcome = _infra_outcome(f"executor_timeout_after_s={timeout_s:g}")
                 else:
                     try:
                         outcome = inflight.future.result()
                     except Exception as e:
-                        outcome = ExecutionOutcome(
-                            status=VerifyStatus.INFRA,
-                            notes=f"executor_exception={type(e).__name__}: {e}",
-                        )
+                        outcome = _infra_outcome(f"executor_exception={type(e).__name__}: {e}")
                 state = self._settle_attempt(
                     state=state,
                     task_specs=task_specs,
