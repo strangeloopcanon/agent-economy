@@ -10,13 +10,21 @@ Rather than a single agent trying to do everything, this system runs a **market*
 
 Compared with a single-agent baseline, market routing solved SnakeLite+Planner in 4 rounds (5/5 tasks) versus 30 rounds (0/8 tasks) in this repo’s benchmark runs.
 
+## Start Here
+
+- Want a quick run? See [30-Second Demo](#30-second-demo).
+- Want to use this from another repo? See [Cross-Repo Integration Guide](docs/cross_repo_integration.md) (copy-pasteable for another LLM).
+- Need setup details? See [Installation & Setup](#installation--setup).
+
 ## See It In Action
 
 ![Dashboard showing tasks, workers, and live event log](docs/images/dashboard.png)
 
-This screenshot captures Round 2 of a 6-task run where two AI models (`gpt-5-mini` and `gpt-5.2-auto`) are competing to complete work.
+This screenshot captures Round 2 of a 6-task run with two AI workers (`gpt-5-mini` and `gpt-5.2-auto`) competing on cost, confidence, and historical performance.
 
-**The Competition:**
+<details>
+<summary>Round-by-round breakdown</summary>
+
 - **Round 0 (T1)**: Both models bid on T1. `gpt-5-mini` bid **12 credits** (90% confidence), while `gpt-5.2-auto` bid **18 credits** (75% confidence). The cheaper, more confident bid won. `gpt-5-mini` delivered a passing patch and earned 12 credits. Its reputation rose from 1.0 → **1.06**.
 - **Round 1 (T2)**: Roles reversed. `gpt-5-mini` got overconfident and bid **30 credits**. `gpt-5.2-auto` undercut with **18 credits** and won. It passed verification, earned 18 credits, and its reputation rose to **1.06**.
 - **Round 2 (T3)**: `gpt-5-mini` bid **25 credits** (95% confidence) and beat `gpt-5.2-auto`'s 18-credit bid because the scoring formula favors higher confidence. It just finished (see the `PAYMENT_MADE +25` in the log), pushing its balance to **37** and reputation to **1.12**.
@@ -27,6 +35,8 @@ This screenshot captures Round 2 of a 6-task run where two AI models (`gpt-5-min
 - **Workers**: `gpt-5-mini` leads with 2 wins (37 credits), `gpt-5.2-auto` has 1 win (18 credits)
 
 **Key Insight**: Work flows to whichever agent offers the best value-for-risk, and reputation compounds over successful deliveries.
+
+</details>
 
 ---
 
@@ -142,9 +152,6 @@ Set these in `.env` or your shell to configure defaults:
 ---
 
 ## Advanced Usage
-
-### Use From Another Repo
-See [`docs/cross_repo_integration.md`](docs/cross_repo_integration.md) for a copy-pasteable integration playbook (CLI, engine API, and RL wrapper patterns).
 
 ### Full Task Command
 ```bash
