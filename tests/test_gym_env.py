@@ -5,9 +5,9 @@ from __future__ import annotations
 import pytest
 
 from tests.helpers import AlwaysFailExecutor, AlwaysPassExecutor
-from institution_service.engine import BidResult
-from institution_service.gym_env import InstitutionEnv
-from institution_service.schemas import (
+from agent_economy.engine import BidResult
+from agent_economy.gym_env import InstitutionEnv
+from agent_economy.schemas import (
     Bid,
     CommandSpec,
     TaskSpec,

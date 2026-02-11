@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from institution_service.llm_openai import (
+from agent_economy.llm_openai import (
     OpenAIJSONClient,
     _resolve_max_retries,
 )
@@ -56,9 +56,9 @@ def test_resolve_max_retries_rejects_invalid_and_too_high_values() -> None:
 
 
 def test_call_text_retries_only_transient_errors(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("INST_OPENAI_MAX_RETRIES", "3")
+    monkeypatch.setenv("AE_OPENAI_MAX_RETRIES", "3")
     monkeypatch.setattr(
-        "institution_service.llm_openai._is_transient_error",
+        "agent_economy.llm_openai._is_transient_error",
         lambda err: isinstance(err, TimeoutError),
     )
     client, fake_responses = _make_client(
@@ -79,8 +79,9 @@ def test_call_text_retries_only_transient_errors(monkeypatch: pytest.MonkeyPatch
 
 
 def test_call_text_fails_fast_on_deterministic_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("AE_OPENAI_MAX_RETRIES", raising=False)
     monkeypatch.delenv("INST_OPENAI_MAX_RETRIES", raising=False)
-    monkeypatch.setattr("institution_service.llm_openai._is_transient_error", lambda err: False)
+    monkeypatch.setattr("agent_economy.llm_openai._is_transient_error", lambda err: False)
     client, fake_responses = _make_client(outcomes=[ValueError("schema fail")])
 
     with pytest.raises(ValueError, match="schema fail"):

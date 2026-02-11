@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agent Economy Dashboard</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <header class="header">
+        <h1>🏛️ Agent Economy</h1>
+        <div class="header-info">
+            <span id="run-id">Run: --</span>
+            <span id="round-id">Round: --</span>
+            <span class="status" id="connection-status">● Connecting...</span>
+        </div>
+    </header>
+
+    <main class="dashboard">
+        <section class="panel tasks-panel">
+            <h2>📋 Tasks</h2>
+            <div class="task-board">
+                <div class="task-column" id="todo-column">
+                    <h3>TODO</h3>
+                    <div class="task-list" id="todo-tasks"></div>
+                </div>
+                <div class="task-column" id="assigned-column">
+                    <h3>ASSIGNED</h3>
+                    <div class="task-list" id="assigned-tasks"></div>
+                </div>
+                <div class="task-column" id="review-column">
+                    <h3>REVIEW</h3>
+                    <div class="task-list" id="review-tasks"></div>
+                </div>
+                <div class="task-column" id="done-column">
+                    <h3>DONE</h3>
+                    <div class="task-list" id="done-tasks"></div>
+                </div>
+            </div>
+        </section>
+
+        <section class="panel workers-panel">
+            <h2>👷 Workers</h2>
+            <div class="workers-grid" id="workers-grid"></div>
+        </section>
+
+        <section class="panel events-panel">
+            <h2>📜 Event Log</h2>
+            <div class="events-log" id="events-log"></div>
+        </section>
+    </main>
+
+    <script src="app.js"></script>
+</body>
+</html>

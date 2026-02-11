@@ -1,6 +1,6 @@
 # routerLite (arena README)
 
-This is an **arena template** used by `institution-service` scenarios.
+This is an **arena template** used by `agent-economy` scenarios.
 
 Goal: implement a tiny HTTP-ish request router with a deterministic response formatter.
 

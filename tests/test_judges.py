@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from institution_service.judges import JudgeDecision, aggregate_judge_votes
-from institution_service.schemas import VerifyStatus
+from agent_economy.judges import JudgeDecision, aggregate_judge_votes
+from agent_economy.schemas import VerifyStatus
 
 
 def test_aggregate_judge_votes_empty_is_infra() -> None:

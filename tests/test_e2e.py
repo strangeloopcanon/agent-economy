@@ -1,4 +1,4 @@
-"""End-to-end integration tests for institution-service.
+"""End-to-end integration tests for agent-economy.
 
 Tests the full flow: init -> run -> verify tasks complete.
 """
@@ -10,15 +10,15 @@ from pathlib import Path
 
 import pytest
 
-from institution_service.engine import (
+from agent_economy.engine import (
     BidResult,
     ClearinghouseEngine,
     EngineSettings,
     ExecutionOutcome,
     ReadyTask,
 )
-from institution_service.ledger import HashChainedLedger
-from institution_service.schemas import (
+from agent_economy.ledger import HashChainedLedger
+from agent_economy.schemas import (
     Bid,
     CommandSpec,
     DiscussionMessage,
@@ -28,7 +28,7 @@ from institution_service.schemas import (
     VerifyStatus,
     WorkerRuntime,
 )
-from institution_service.state import SettlementPolicy, replay_ledger
+from agent_economy.state import SettlementPolicy, replay_ledger
 
 
 class DeterministicBidder:
@@ -407,7 +407,7 @@ class TestE2EFullMarketRun:
         assert len(state_json) > 0
 
         # Should round-trip
-        from institution_service.schemas import DerivedState
+        from agent_economy.schemas import DerivedState
 
         restored = DerivedState.model_validate_json(state_json)
         assert restored.run_id == state.run_id

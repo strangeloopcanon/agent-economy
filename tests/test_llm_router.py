@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from institution_service.llm_openai import Usage
-from institution_service.llm_router import LLMRouter
+from agent_economy.llm_openai import Usage
+from agent_economy.llm_router import LLMRouter
 
 
 class _DummySchema(BaseModel):

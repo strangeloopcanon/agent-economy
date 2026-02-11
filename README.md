@@ -1,14 +1,17 @@
-# Institution Service
+# Agent Economy
 
 **A Coordination Layer for AI Agents.**
 
-Repository: [github.com/strangeloopcanon/multi-agent-scaling](https://github.com/strangeloopcanon/multi-agent-scaling)
+Repository: [github.com/strangeloopcanon/agent-economy](https://github.com/strangeloopcanon/agent-economy)
 
 Rather than a single agent trying to do everything, this system runs a **market** where specialized agents bid, compete, and collaborate to solve complex tasks. It applies economic principles (auctions, reputation, skin-in-the-game) to AI code generation.
 
 ---
 
 Compared with a single-agent baseline, market routing solved SnakeLite+Planner in 4 rounds (5/5 tasks) versus 30 rounds (0/8 tasks) in this repo’s benchmark runs.
+
+For one clean task with one clean test, a single agent loop is usually enough: run, check, retry.
+The market is for harder cases where allocation matters, not just completion.
 
 ## Start Here
 
@@ -52,6 +55,20 @@ This screenshot captures Round 2 of a 6-task run with two AI workers (`gpt-5-min
 
 ---
 
+## When A Loop Is Enough (And When It Isn't)
+
+For a single task with a cheap, deterministic oracle (for example, one unit test), a single agent in a loop is often fine.
+If verification is simple and objective, auctions are usually overkill.
+
+The loop starts to break when you have many tasks with different difficulty levels and agents with different cost/capability profiles.
+One agent in a loop does not know when to stop burning tokens on a hard task and hand off to another model that is better suited.
+This is an allocation problem, not just a completion problem.
+
+That pattern already appears in this repo's benchmarks: on SnakeLite + Planner, baseline looping went 0/8 in 30 rounds, while market routing went 5/5 in 4 rounds.
+The loop got stuck; the market routed around the stuck agent.
+
+---
+
 ## The Economics
 
 ### Bidding & Clearing
@@ -72,6 +89,23 @@ failure_penalty = 0.5*bounty*clamp((rep - 0.5)/0.75, 0, 1)
 *   **Sandboxing**: Every attempt runs in a fresh copy of the workspace.
 *   **Payment**: Workers pay token costs for every attempt. They only get paid on `PASS` (either their `ask`, or the fixed `bounty` if you run with `--payment-rule bounty`).
 *   **Settlement Modes**: `commands` (exit code 0), `judges` (LLM vote), `manual` (human review).
+
+### When There Is No `pytest`
+
+Many important tasks do not have an exit code:
+- "Is this a good architecture?"
+- "Did this essay persuade?"
+- "Is this design elegant?"
+
+In the real world, we use social consensus when objective verification is impossible: peer review, editorial boards, juries, ratings, and voting systems.
+This project supports the same idea through `judges` settlement mode, where multiple LLM judges vote on pass/fail.
+
+The core pattern has two parts:
+1. **Competition with consequences**: multiple agents bid, attempt, and bear costs.
+2. **Judgment under comparison**: the key question becomes "which output is best among competitors?" not just "is this output good in isolation?"
+
+In that setup, the market helps create conditions for better verification.
+It does more than loop one agent against one task.
 
 ### Example: Worker Economics Over 3 Rounds
 
@@ -97,7 +131,7 @@ failure_penalty = 0.5*bounty*clamp((rep - 0.5)/0.75, 0, 1)
 
 ```bash
 # After setup (see Installation below)
-institution-service task "Add a hello.py that prints Hello World" \
+agent-economy task "Add a hello.py that prints Hello World" \
   --workspace-src . \
   --allowed-path . \
   --accept "python hello.py | grep -q 'Hello World'" \
@@ -130,7 +164,7 @@ This will:
 
 3.  **Validate** your setup:
     ```bash
-    institution-service config validate
+    agent-economy config validate
     ```
 
 </details>
@@ -143,9 +177,11 @@ Set these in `.env` or your shell to configure defaults:
 | Variable | Purpose |
 |----------|---------|
 | `OPENAI_API_KEY` | API key for OpenAI models |
-| `INST_MODELS_JSON` | Default worker pool as JSON (alternative to `--workers`) |
-| `INST_PLANNER_WORKER` | Default planner worker/model ref |
-| `INST_JUDGES_JSON` | Default judge workers as JSON list |
+| `AE_MODELS_JSON` | Default worker pool as JSON (alternative to `--workers`) |
+| `AE_PLANNER_WORKER` | Default planner worker/model ref |
+| `AE_JUDGES_JSON` | Default judge workers as JSON list |
+
+Legacy `INST_*` names are still accepted for compatibility.
 
 </details>
 
@@ -155,7 +191,7 @@ Set these in `.env` or your shell to configure defaults:
 
 ### Full Task Command
 ```bash
-institution-service task "Fix the failing tests" \
+agent-economy task "Fix the failing tests" \
   --workspace-src /path/to/repo \
   --allowed-path src/ \
   --allowed-path tests/ \
@@ -170,7 +206,7 @@ If a task fails repeatedly (default: 3 times), the engine requests a revised pla
 ### Dynamic Task Injection
 Inject new tasks into an active run:
 ```bash
-institution-service inject \
+agent-economy inject \
   --run-dir runs/my-active-run \
   --title "Fix critical bug in auth" \
   --bounty 100 \
@@ -198,11 +234,11 @@ ollama pull qwen3:8b
 export OLLAMA_BASE_URL=http://127.0.0.1:11434
 
 # 3) Run with local workers
-institution-service oneshot \
+agent-economy oneshot \
   --workers benchmarks/workers_local_qwen_3b8b.json \
   --prompt "Fix failing parser tests" \
   --workspace-src . \
-  --allowed-path institution_service/ \
+  --allowed-path agent_economy/ \
   --allowed-path tests/ \
   --accept "python -m pytest -q tests/test_parser.py"
 ```
@@ -217,14 +253,14 @@ If your tags differ, edit `benchmarks/workers_local_qwen_3b8b.json`.
 
 ### Real-Time Dashboard
 ```bash
-institution-service dashboard --run-dir runs/my-active-run
+agent-economy dashboard --run-dir runs/my-active-run
 # Open http://localhost:8080
 ```
 
 ### Benchmarks
 ```bash
-institution-service init --scenario scenarios/snakelite.yaml --run-dir runs/bench
-institution-service run --run-dir runs/bench
+agent-economy init --scenario scenarios/snakelite.yaml --run-dir runs/bench
+agent-economy run --run-dir runs/bench
 ```
 
 ### Export RL Transitions

@@ -3,8 +3,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-from institution_service.engine import BidResult, ExecutionOutcome, ReadyTask
-from institution_service.schemas import (
+from agent_economy.engine import BidResult, ExecutionOutcome, ReadyTask
+from agent_economy.schemas import (
     Bid,
     DiscussionMessage,
     TaskSpec,

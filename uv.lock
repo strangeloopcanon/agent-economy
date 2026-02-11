@@ -107,7 +107,7 @@ wheels = [
 ]
 
 [[package]]
-name = "institution-service"
+name = "agent-economy"
 version = "0.0.0"
 source = { editable = "." }
 dependencies = [

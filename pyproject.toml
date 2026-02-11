@@ -3,7 +3,7 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "institution-service"
+name = "agent-economy"
 version = "0.0.0"
 description = "Task-market clearinghouse kernel (bids -> clear -> patch/verify -> settle -> ledger)"
 readme = "README.md"
@@ -22,13 +22,13 @@ dev = [
 ]
 
 [project.scripts]
-institution-service = "institution_service.main:main"
+agent-economy = "agent_economy.main:main"
 
 [tool.setuptools.packages.find]
-include = ["institution_service*"]
+include = ["agent_economy*"]
 
 [tool.setuptools.package-data]
-"institution_service.dashboard" = ["static/*"]
+"agent_economy.dashboard" = ["static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
