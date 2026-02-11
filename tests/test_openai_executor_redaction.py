@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from institution_service.openai_executor import _read_hint_files
+from agent_economy.openai_executor import _read_hint_files
 
 
 def test_read_hint_files_redacts_dotenv(tmp_path) -> None:

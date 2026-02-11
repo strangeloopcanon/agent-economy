@@ -2,16 +2,16 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from institution_service.engine import (
+from agent_economy.engine import (
     BidResult,
     ClearinghouseEngine,
     EngineSettings,
     ExecutionOutcome,
     ReadyTask,
 )
-from institution_service.finalize import release_judges_holdbacks
-from institution_service.ledger import HashChainedLedger
-from institution_service.schemas import (
+from agent_economy.finalize import release_judges_holdbacks
+from agent_economy.ledger import HashChainedLedger
+from agent_economy.schemas import (
     Bid,
     CommandSpec,
     DiscussionMessage,
@@ -21,7 +21,7 @@ from institution_service.schemas import (
     VerifyStatus,
     WorkerRuntime,
 )
-from institution_service.state import replay_ledger
+from agent_economy.state import replay_ledger
 
 
 class ScriptedBidder:

@@ -2,16 +2,16 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from institution_service.engine import (
+from agent_economy.engine import (
     BidResult,
     ClearinghouseEngine,
     EngineSettings,
     ExecutionOutcome,
     ReadyTask,
 )
-from institution_service.learning_trace import extract_attempt_transitions
-from institution_service.ledger import HashChainedLedger
-from institution_service.schemas import (
+from agent_economy.learning_trace import extract_attempt_transitions
+from agent_economy.ledger import HashChainedLedger
+from agent_economy.schemas import (
     Bid,
     CommandSpec,
     DiscussionMessage,

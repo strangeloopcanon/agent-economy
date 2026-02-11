@@ -143,7 +143,7 @@ def summarize_run(*, run_dir: Path) -> dict[str, Any]:
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="Summarize an institution-service run directory.")
+    p = argparse.ArgumentParser(description="Summarize an agent-economy run directory.")
     p.add_argument("run_dir", nargs="+", type=Path)
     p.add_argument("--json", action="store_true", help="print JSON instead of text")
     args = p.parse_args()

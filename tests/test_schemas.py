@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from institution_service.schemas import Bid, CommandSpec, TaskSpec, VerifyMode
+from agent_economy.schemas import Bid, CommandSpec, TaskSpec, VerifyMode
 
 
 def test_task_spec_acceptance_required_in_commands_mode() -> None:

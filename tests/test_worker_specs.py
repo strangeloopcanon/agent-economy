@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from institution_service.schemas import WorkerType
-from institution_service.worker_specs import load_worker_pool_from_json
+from agent_economy.schemas import WorkerType
+from agent_economy.worker_specs import load_worker_pool_from_json
 
 
 def test_load_worker_pool_from_json_supports_mapping_backcompat() -> None:

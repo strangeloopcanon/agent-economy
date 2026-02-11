@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from institution_service.config import InstitutionSettings
-from institution_service.main import _llm_router_for_workers
-from institution_service.schemas import WorkerRuntime, WorkerType
+from agent_economy.config import InstitutionSettings
+from agent_economy.main import _llm_router_for_workers
+from agent_economy.schemas import WorkerRuntime, WorkerType
 
 
 def test_llm_router_for_workers_supports_ollama_without_openai_key() -> None:

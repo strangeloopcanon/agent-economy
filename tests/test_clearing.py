@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from institution_service.clearing import BidSubmission, choose_assignments, score_bid_breakdown
-from institution_service.schemas import Bid, TaskRuntime, WorkerRuntime
+from agent_economy.clearing import BidSubmission, choose_assignments, score_bid_breakdown
+from agent_economy.schemas import Bid, TaskRuntime, WorkerRuntime
 
 
 def test_choose_assignments_deterministic_tiebreak() -> None:

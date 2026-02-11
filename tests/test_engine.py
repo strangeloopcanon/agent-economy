@@ -4,15 +4,15 @@ import time
 from collections.abc import Sequence
 from typing import Any
 
-from institution_service.engine import (
+from agent_economy.engine import (
     BidResult,
     ClearinghouseEngine,
     EngineSettings,
     ExecutionOutcome,
     ReadyTask,
 )
-from institution_service.ledger import HashChainedLedger
-from institution_service.schemas import (
+from agent_economy.ledger import HashChainedLedger
+from agent_economy.schemas import (
     Bid,
     CommandSpec,
     EventType,
@@ -21,7 +21,7 @@ from institution_service.schemas import (
     VerifyStatus,
     WorkerRuntime,
 )
-from institution_service.state import replay_ledger
+from agent_economy.state import replay_ledger
 
 
 class ScriptedBidder:

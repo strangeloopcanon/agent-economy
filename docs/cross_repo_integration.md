@@ -1,6 +1,6 @@
 # Cross-Repo Integration Guide
 
-Use this when you want to consume `institution-service` from a different repository.
+Use this when you want to consume `agent-economy` from a different repository.
 
 For early adoption, the best path is a pinned git dependency. It is fast to set up, reproducible, and requires no packaging pipeline.
 
@@ -9,36 +9,36 @@ For early adoption, the best path is a pinned git dependency. It is fast to set 
 - Install as a git dependency in the consuming repo.
 - Pin to a commit or tag (do not track `main` in production).
 - Use one of three surfaces:
-  - CLI (`institution-service ...`)
+  - CLI (`agent-economy ...`)
   - Engine API (`ClearinghouseEngine`)
   - RL wrapper (`InstitutionEnv`)
 
 ## Copy-paste handoff for another LLM
 
 ```markdown
-# institution-service integration playbook
+# agent-economy integration playbook
 
 ## Goal
-Use `institution-service` from another repository with reproducible setup.
+Use `agent-economy` from another repository with reproducible setup.
 
 ## Install in consuming repo
 
 ### Recommended (`uv add`, pinned commit)
 ```bash
-uv add "institution-service @ git+https://github.com/strangeloopcanon/multi-agent-scaling.git@aa6c785867305efe810c63a92d81dc8fb7115937"
+uv add "agent-economy @ git+https://github.com/strangeloopcanon/agent-economy.git@aa6c785867305efe810c63a92d81dc8fb7115937"
 ```
 
 ### Alternative (`pyproject.toml`)
 ```toml
 [project]
 dependencies = [
-  "institution-service @ git+https://github.com/strangeloopcanon/multi-agent-scaling.git@aa6c785867305efe810c63a92d81dc8fb7115937",
+  "agent-economy @ git+https://github.com/strangeloopcanon/agent-economy.git@aa6c785867305efe810c63a92d81dc8fb7115937",
 ]
 ```
 
 ### Local co-development
 ```bash
-uv pip install -e /path/to/institution-service
+uv pip install -e /path/to/agent-economy
 ```
 
 ---
@@ -46,7 +46,7 @@ uv pip install -e /path/to/institution-service
 ## Surface A: CLI orchestration
 
 ```bash
-uv run institution-service oneshot "Add hello.txt containing Hello" \
+uv run agent-economy oneshot "Add hello.txt containing Hello" \
   --workspace-src . \
   --allowed-path . \
   --accept "grep -q 'Hello' hello.txt" \
@@ -55,17 +55,17 @@ uv run institution-service oneshot "Add hello.txt containing Hello" \
 ```
 
 Useful commands:
-- `uv run institution-service config validate`
-- `uv run institution-service task "<goal>" ...`
-- `uv run institution-service report --run-dir <run_dir>`
-- `uv run institution-service dashboard --run-dir <run_dir>`
+- `uv run agent-economy config validate`
+- `uv run agent-economy task "<goal>" ...`
+- `uv run agent-economy report --run-dir <run_dir>`
+- `uv run agent-economy dashboard --run-dir <run_dir>`
 
 ---
 
 ## Surface B: Engine API (programmatic)
 
 ```python
-from institution_service import (
+from agent_economy import (
     ClearinghouseEngine,
     EngineSettings,
     InMemoryLedger,
@@ -131,7 +131,7 @@ print("done:", state.tasks["T1"].status, "balance:", state.workers["w1"].balance
 ## Surface C: RL environment (`InstitutionEnv`)
 
 ```python
-from institution_service import (
+from agent_economy import (
     InstitutionEnv,
     TaskSpec,
     CommandSpec,
@@ -163,7 +163,7 @@ print(reward, terminated, truncated, info)
 ## Upgrade workflow
 
 ```bash
-uv add "institution-service @ git+https://github.com/strangeloopcanon/multi-agent-scaling.git@<new-tag-or-commit>"
+uv add "agent-economy @ git+https://github.com/strangeloopcanon/agent-economy.git@<new-tag-or-commit>"
 uv lock
 uv run pytest -q
 ```
@@ -171,6 +171,6 @@ uv run pytest -q
 
 ## Notes
 
-- Public import surface is exposed from `institution_service/__init__.py`.
-- CLI entrypoint is `institution-service` from `pyproject.toml` scripts.
+- Public import surface is exposed from `agent_economy/__init__.py`.
+- CLI entrypoint is `agent-economy` from `pyproject.toml` scripts.
 - For local-model usage (Ollama/Qwen), keep worker definitions in your consuming repo and point `model_ref` to the provider-specific reference.

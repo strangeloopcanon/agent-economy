@@ -19,7 +19,7 @@ format:
 check:
 	$(PYTHON) -m ruff format --check .
 	$(PYTHON) -m ruff check .
-	$(PYTHON) -m compileall institution_service tests
+	$(PYTHON) -m compileall agent_economy tests
 
 test:
 	$(PYTHON) -m pytest -q

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from institution_service.observation import build_observation
-from institution_service.schemas import (
+from agent_economy.observation import build_observation
+from agent_economy.schemas import (
     CommandSpec,
     DerivedState,
     DiscussionMessage,

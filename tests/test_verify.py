@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 
-from institution_service import verify
+from agent_economy import verify
 
 
 def test_base_env_prepends_sys_executable_parent(tmp_path, monkeypatch) -> None:

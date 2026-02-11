@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from institution_service.ledger import HashChainedLedger
-from institution_service.schemas import EventType, VerifyStatus
-from institution_service.state import replay_ledger
+from agent_economy.ledger import HashChainedLedger
+from agent_economy.schemas import EventType, VerifyStatus
+from agent_economy.state import replay_ledger
 
 
 def test_replay_updates_balance_and_reputation(tmp_path) -> None:

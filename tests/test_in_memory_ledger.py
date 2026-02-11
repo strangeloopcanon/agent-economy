@@ -5,19 +5,19 @@ from __future__ import annotations
 import pytest
 
 from tests.helpers import AlwaysPassExecutor, FixedBidder
-from institution_service.engine import (
+from agent_economy.engine import (
     ClearinghouseEngine,
     EngineSettings,
 )
-from institution_service.ledger import InMemoryLedger
-from institution_service.schemas import (
+from agent_economy.ledger import InMemoryLedger
+from agent_economy.schemas import (
     CommandSpec,
     EventType,
     PaymentRule,
     TaskSpec,
     WorkerRuntime,
 )
-from institution_service.state import replay_ledger
+from agent_economy.state import replay_ledger
 
 
 class TestInMemoryLedger:

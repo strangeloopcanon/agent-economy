@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from institution_service.planner import (
+from agent_economy.planner import (
     DecompositionPlan,
     PlannedTask,
     toposort_plan,

@@ -4,7 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
-from institution_service.learning_trace import extract_attempt_transitions_from_run
+from agent_economy.learning_trace import extract_attempt_transitions_from_run
 
 
 def main() -> None:

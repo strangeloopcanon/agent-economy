@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from institution_service.sandbox import (
+from agent_economy.sandbox import (
     apply_unified_diff,
     apply_unified_diff_path,
     build_patch_from_dirs,

@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 
 import pytest
-from institution_service.jsonutil import stable_json_dumps
-from institution_service.ledger import HashChainedLedger
-from institution_service.schemas import EventType
+from agent_economy.jsonutil import stable_json_dumps
+from agent_economy.ledger import HashChainedLedger
+from agent_economy.schemas import EventType
 
 
 def test_hash_chained_ledger_verifies_and_detects_tampering(tmp_path) -> None:

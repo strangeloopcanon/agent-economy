@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from institution_service.cost_estimator import ExpectedCostEstimator
-from institution_service.costing import Price
-from institution_service.schemas import (
+from agent_economy.cost_estimator import ExpectedCostEstimator
+from agent_economy.costing import Price
+from agent_economy.schemas import (
     Bid,
     EventType,
     LedgerEvent,
@@ -12,7 +12,7 @@ from institution_service.schemas import (
     VerifyMode,
     WorkerRuntime,
 )
-from institution_service.worker_state import (
+from agent_economy.worker_state import (
     PersistedWorkerState,
     PersistedWorkerStats,
     apply_state_to_workers,
