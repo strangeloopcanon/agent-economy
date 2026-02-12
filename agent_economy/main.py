@@ -45,6 +45,7 @@ from agent_economy.schemas import (
     EventType,
     JudgeSpec,
     PaymentRule,
+    SubmissionKind,
     TaskRuntime,
     TaskSpec,
     VerifyMode,
@@ -446,16 +447,18 @@ def _print_next_steps(*, run_dir: Path, workspace_dir: Path, state) -> None:
         print(f"Manual review pending: agent-economy review list --run-dir {run_dir}")
 
 
-def _load_patch_artifact_path(*, run_dir: Path, patch_event) -> Path:
+def _load_submission_artifact_path(*, run_dir: Path, patch_event) -> Path:
     by_name = {a.name: a for a in getattr(patch_event, "artifacts", [])}
-    for name in ("patch.diff", "patch_files.json"):
+    for name in ("patch.diff", "patch_files.json", "submission.txt", "submission.json"):
         a = by_name.get(name)
         if a is None or not a.path:
             continue
         p = run_dir / a.path
         if p.exists():
             return p
-    raise SystemExit("missing patch artifact (expected patch.diff or patch_files.json)")
+    raise SystemExit(
+        "missing submission artifact (expected patch.diff, patch_files.json, submission.txt, or submission.json)"
+    )
 
 
 def _find_review_events(*, events: list, task_id: str, worker_id: str) -> tuple[object, object]:
@@ -617,6 +620,12 @@ def main(argv: list[str] | None = None) -> int:
         )
         p.add_argument("--allowed-path", action="append", default=[], help="allowed patch path")
         p.add_argument("--files-hint", action="append", default=[], help="file path hint")
+        p.add_argument(
+            "--submission-kind",
+            choices=["patch", "text", "json"],
+            default="patch",
+            help="worker submission type (patch modifies files, text/json submits an answer artifact)",
+        )
         p.add_argument("--goal", type=str, default=None, help="high-level goal (for --decompose)")
         g = p.add_mutually_exclusive_group()
         g.add_argument(
@@ -1047,6 +1056,7 @@ def main(argv: list[str] | None = None) -> int:
             raw_verify_mode = (
                 "commands" if (args.accept or args.hidden_accept or args.decompose) else "judges"
             )
+        submission_kind = SubmissionKind(str(args.submission_kind))
 
         # acceptance/hidden_acceptance need to be parsed into CommandSpec
         acceptance = [CommandSpec(cmd=cmd) for cmd in args.accept]
@@ -1058,6 +1068,7 @@ def main(argv: list[str] | None = None) -> int:
             description=args.description,
             bounty=args.bounty,
             verify_mode=VerifyMode(raw_verify_mode),
+            submission_kind=submission_kind,
             acceptance=acceptance,
             hidden_acceptance=hidden_acceptance,
             allowed_paths=args.allowed_path if args.allowed_path else ["./"],
@@ -1101,6 +1112,7 @@ def main(argv: list[str] | None = None) -> int:
                 "commands" if (args.accept or args.hidden_accept or args.decompose) else "judges"
             )
         verify_mode = VerifyMode(raw_verify_mode)
+        submission_kind = SubmissionKind(str(args.submission_kind))
 
         judge_workers = (
             [str(m) for m in list(args.judge_worker) if str(m).strip()]
@@ -1144,6 +1156,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Rounds: {args.rounds}")
             print(f"Concurrency: {args.concurrency}")
             print(f"Verify Mode: {verify_mode.value}")
+            print(f"Submission Kind: {submission_kind.value}")
 
             if args.decompose:
                 print(f"\nGoal: {args.goal or args.description}")
@@ -1430,6 +1443,7 @@ def main(argv: list[str] | None = None) -> int:
                         deps=[str(d) for d in planned.deps],
                         bounty=int(args.bounty),
                         verify_mode=verify_mode,
+                        submission_kind=submission_kind,
                         acceptance=[CommandSpec(cmd=str(c)) for c in accept_cmds],
                         hidden_acceptance=[CommandSpec(cmd=str(c)) for c in hidden_cmds],
                         judges=judges,
@@ -1451,6 +1465,7 @@ def main(argv: list[str] | None = None) -> int:
                     deps=[],
                     bounty=int(args.bounty),
                     verify_mode=verify_mode,
+                    submission_kind=submission_kind,
                     acceptance=[CommandSpec(cmd=str(c)) for c in list(args.accept)],
                     hidden_acceptance=[CommandSpec(cmd=str(c)) for c in list(args.hidden_accept)],
                     judges=judges,
@@ -1571,7 +1586,7 @@ def main(argv: list[str] | None = None) -> int:
                 wid = t.assigned_worker or "<unknown>"
                 try:
                     _, patch = _find_review_events(events=events, task_id=t.task_id, worker_id=wid)
-                    patch_path = _load_patch_artifact_path(run_dir=run_dir, patch_event=patch)
+                    patch_path = _load_submission_artifact_path(run_dir=run_dir, patch_event=patch)
                     patch_rel = str(patch_path.relative_to(run_dir))
                 except Exception as e:
                     patch_rel = f"<error: {e}>"
@@ -1590,7 +1605,7 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit(f"missing assigned_worker for review task: {task_id}")
 
         completed, patch = _find_review_events(events=events, task_id=task_id, worker_id=worker_id)
-        patch_path = _load_patch_artifact_path(run_dir=run_dir, patch_event=patch)
+        patch_path = _load_submission_artifact_path(run_dir=run_dir, patch_event=patch)
         spec = task_specs.get(task_id)
         if spec is None:
             raise SystemExit(f"missing TaskSpec for task_id={task_id}")
@@ -1615,7 +1630,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 enforce_allowed_paths(paths=touched, allowed=spec.allowed_paths)
                 apply_unified_diff_path(patch_path=patch_path, cwd=workspace_dir)
-            else:
+            elif patch_path.name == "patch_files.json":
                 files = json.loads(patch_path.read_text(encoding="utf-8"))
                 if not isinstance(files, dict) or any(
                     not isinstance(k, str) or not isinstance(v, str) for k, v in files.items()
@@ -1624,6 +1639,11 @@ def main(argv: list[str] | None = None) -> int:
                 touched = sorted(files.keys())
                 enforce_allowed_paths(paths=touched, allowed=spec.allowed_paths)
                 apply_file_blocks(files=files, cwd=workspace_dir)
+            elif patch_path.name in {"submission.txt", "submission.json"}:
+                # Non-patch submissions have no workspace edits to apply.
+                pass
+            else:
+                raise SystemExit(f"unsupported submission artifact for review: {patch_path.name}")
 
             bid = (getattr(completed, "payload", {}) or {}).get("bid") or {}
             ask = int(bid.get("ask") or 0) if isinstance(bid, dict) else 0
@@ -1651,6 +1671,7 @@ def main(argv: list[str] | None = None) -> int:
                     "worker_id": worker_id,
                     "success": True,
                     "verify_status": VerifyStatus.PASS.value,
+                    "submission_kind": spec.submission_kind.value,
                     "bid": bid,
                     "bounty_current": bounty,
                 },
@@ -1694,6 +1715,7 @@ def main(argv: list[str] | None = None) -> int:
                     "worker_id": worker_id,
                     "success": False,
                     "verify_status": status.value,
+                    "submission_kind": spec.submission_kind.value,
                 },
             )
             if status == VerifyStatus.FAIL:

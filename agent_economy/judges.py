@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 
 from agent_economy.json_extract import extract_json_object
 from agent_economy.llm_router import LLMRouter
-from agent_economy.schemas import TaskSpec, VerifyStatus, WorkerRuntime, WorkerType
+from agent_economy.schemas import SubmissionKind, TaskSpec, VerifyStatus, WorkerRuntime, WorkerType
 from agent_economy.verify import CommandResult
 
 from agent_economy.worker_specs import CommandWorkerSpec
@@ -119,13 +119,13 @@ def _format_command_results(results: list[CommandResult]) -> str:
 def judge_system_prompt() -> str:
     return "\n".join(
         [
-            "You are a strict verifier for a code-change task.",
-            "You are given: task description, command outputs (if any), and a unified diff.",
-            "Decide whether the patch satisfies the task and is safe/correct.",
+            "You are a strict verifier for a task submission.",
+            "You are given: task description, command outputs (if any), and either a unified diff or submission text.",
+            "Decide whether the submission satisfies the task and is safe/correct.",
             "",
             "Rules:",
-            "- If the patch does not implement the task, verdict=FAIL.",
-            "- If the patch introduces obvious bugs, unsafe behavior, or ignores constraints, verdict=FAIL.",
+            "- If the submission does not implement the task, verdict=FAIL.",
+            "- If the submission introduces obvious bugs, unsafe behavior, or ignores constraints, verdict=FAIL.",
             "- Be conservative: when in doubt, verdict=FAIL and explain what’s missing.",
             "",
             "Return JSON only with fields:",
@@ -140,20 +140,26 @@ def judge_user_prompt(
     public: list[CommandResult],
     hidden: list[CommandResult],
     diff_text: str,
+    submission_kind: SubmissionKind,
+    submission_text: str | None,
 ) -> str:
-    return "\n".join(
-        [
-            f"Task: {task.id} — {task.title}",
-            task.description.strip() or "(no description)",
-            "",
-            "Public command results:",
-            _format_command_results(public),
-            "Hidden command results:",
-            _format_command_results(hidden),
-            "Unified diff:",
-            diff_text,
-        ]
-    )
+    lines: list[str] = [
+        f"Task: {task.id} — {task.title}",
+        task.description.strip() or "(no description)",
+        "",
+        "Submission kind:",
+        submission_kind.value,
+        "",
+        "Public command results:",
+        _format_command_results(public),
+        "Hidden command results:",
+        _format_command_results(hidden),
+    ]
+    if submission_kind == SubmissionKind.PATCH:
+        lines.extend(["Unified diff:", diff_text])
+    else:
+        lines.extend(["Submission text:", submission_text or "(missing submission text)"])
+    return "\n".join(lines)
 
 
 @dataclass(frozen=True)
@@ -210,12 +216,21 @@ def run_judges_with_workers(
     public: list[CommandResult],
     hidden: list[CommandResult],
     diff_text: str,
+    submission_kind: SubmissionKind,
+    submission_text: str | None,
     required_passes: int,
     max_output_tokens: int = 1200,
     cwd: Path,
 ) -> tuple[VerifyStatus, list[JudgeCall]]:
     sys = judge_system_prompt()
-    user = judge_user_prompt(task=task, public=public, hidden=hidden, diff_text=diff_text)
+    user = judge_user_prompt(
+        task=task,
+        public=public,
+        hidden=hidden,
+        diff_text=diff_text,
+        submission_kind=submission_kind,
+        submission_text=submission_text,
+    )
 
     calls: list[JudgeCall] = []
     for w in judge_workers:
@@ -256,6 +271,8 @@ def run_judges_with_workers(
                 "public": [asdict(r) for r in public],
                 "hidden": [asdict(r) for r in hidden],
                 "diff": diff_text,
+                "submission_kind": submission_kind.value,
+                "submission_text": submission_text,
             }
             decision, raw = _run_command_judge(
                 cmd=str(spec.judge_cmd),

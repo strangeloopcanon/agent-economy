@@ -24,6 +24,7 @@ from agent_economy.schemas import (
     PaymentRule,
     TaskRuntime,
     TaskSpec,
+    SubmissionKind,
     VerifyMode,
     VerifyStatus,
     WorkerRuntime,
@@ -61,9 +62,11 @@ class ExecutionOutcome:
     status: VerifyStatus
     notes: str | None = None
     patch_artifacts: list[ArtifactRef] = field(default_factory=list)
+    submission_artifacts: list[ArtifactRef] = field(default_factory=list)
     verification_artifacts: list[ArtifactRef] = field(default_factory=list)
     sandbox_rel: str | None = None
     patch_kind: str | None = None
+    submission_kind: SubmissionKind | None = None
     llm_usage: dict[str, int] | None = None
 
     def with_status(self, status: VerifyStatus, notes: str | None = None) -> ExecutionOutcome:
@@ -72,9 +75,11 @@ class ExecutionOutcome:
             status=status,
             notes=notes if notes is not None else self.notes,
             patch_artifacts=list(self.patch_artifacts),
+            submission_artifacts=list(self.submission_artifacts),
             verification_artifacts=list(self.verification_artifacts),
             sandbox_rel=self.sandbox_rel,
             patch_kind=self.patch_kind,
+            submission_kind=self.submission_kind,
             llm_usage=self.llm_usage,
         )
 
@@ -218,6 +223,7 @@ def _load_task_specs_from_events(*, events: Iterable) -> dict[str, TaskSpec]:
                     "bounty": int(p.get("bounty", 1)),
                     "max_attempts": int(p.get("max_attempts", 3)),
                     "verify_mode": p.get("verify_mode", "commands"),
+                    "submission_kind": p.get("submission_kind", "patch"),
                     "judges": p.get("judges"),
                     "acceptance": acceptance,
                     "hidden_acceptance": hidden_acceptance,
@@ -403,6 +409,7 @@ class ClearinghouseEngine:
                     "bounty": t.bounty,
                     "max_attempts": t.max_attempts,
                     "verify_mode": t.verify_mode.value,
+                    "submission_kind": t.submission_kind.value,
                     "judges": None if t.judges is None else t.judges.model_dump(),
                     # Store as dict so the ledger is tool-agnostic JSON.
                     "acceptance": [c.model_dump() for c in t.acceptance],
@@ -431,6 +438,7 @@ class ClearinghouseEngine:
                 "bounty": task.bounty,
                 "max_attempts": task.max_attempts,
                 "verify_mode": task.verify_mode.value,
+                "submission_kind": task.submission_kind.value,
                 "judges": None if task.judges is None else task.judges.model_dump(),
                 "acceptance": [c.model_dump() for c in task.acceptance],
                 "hidden_acceptance": [c.model_dump() for c in task.hidden_acceptance],
@@ -522,6 +530,12 @@ class ClearinghouseEngine:
             holdback_amount = round(float(base_amount_before) * frac, 2)
             holdback_amount = min(float(base_amount_before), max(0.0, holdback_amount))
 
+        submitted_artifacts = (
+            list(outcome.submission_artifacts)
+            if outcome.submission_artifacts
+            else list(outcome.patch_artifacts)
+        )
+
         self._ledger.append(
             EventType.PATCH_SUBMITTED,
             run_id=run_id,
@@ -531,9 +545,12 @@ class ClearinghouseEngine:
                 "worker_id": worker_id,
                 "notes": outcome.notes,
                 "model_ref": cur_worker.model_ref,
+                "submission_kind": (
+                    None if outcome.submission_kind is None else outcome.submission_kind.value
+                ),
                 "llm_usage": outcome.llm_usage,
             },
-            artifacts=outcome.patch_artifacts,
+            artifacts=submitted_artifacts,
         )
 
         usage_cost = 0.0
@@ -593,6 +610,9 @@ class ClearinghouseEngine:
                 "holdback_amount": holdback_amount,
                 "sandbox": outcome.sandbox_rel,
                 "patch_kind": outcome.patch_kind,
+                "submission_kind": (
+                    None if outcome.submission_kind is None else outcome.submission_kind.value
+                ),
                 "award_score": None if award_score is None else float(award_score),
                 "award_expected_cost": (
                     None if award_expected_cost is None else float(award_expected_cost)

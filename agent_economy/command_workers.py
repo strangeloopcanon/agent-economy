@@ -27,11 +27,17 @@ from agent_economy.schemas import (
     Bid,
     DiscussionMessage,
     PaymentRule,
+    SubmissionKind,
     TaskSpec,
     VerifyMode,
     VerifyStatus,
     WorkerRuntime,
     WorkerType,
+)
+from agent_economy.submission import (
+    normalize_submission_output,
+    persist_submission,
+    submission_media_type,
 )
 from agent_economy.verify import CommandResult, all_passed, run_commands
 from agent_economy.worker_specs import CommandWorkerSpec
@@ -262,7 +268,7 @@ class CommandExecutor:
             }
         )
 
-        patch_artifacts = [
+        submission_artifacts = [
             artifact_for(
                 task_json_path,
                 name="task.json",
@@ -285,7 +291,7 @@ class CommandExecutor:
         except subprocess.TimeoutExpired as e:
             out_path = sandbox_dir / "worker_timeout.txt"
             write_text_atomic(out_path, f"TimeoutExpired: {e}\n")
-            patch_artifacts.append(
+            submission_artifacts.append(
                 artifact_for(
                     out_path,
                     name="worker_timeout.txt",
@@ -296,16 +302,18 @@ class CommandExecutor:
             return ExecutionOutcome(
                 status=VerifyStatus.TIMEOUT,
                 notes="exec_cmd_timeout",
-                patch_artifacts=patch_artifacts,
+                patch_artifacts=list(submission_artifacts),
+                submission_artifacts=list(submission_artifacts),
                 sandbox_rel=sandbox_rel,
-                patch_kind="diff",
+                patch_kind="diff" if task.submission_kind == SubmissionKind.PATCH else "none",
+                submission_kind=task.submission_kind,
             )
 
         stdout_path = sandbox_dir / "worker_stdout.txt"
         stderr_path = sandbox_dir / "worker_stderr.txt"
         write_text_atomic(stdout_path, proc.stdout or "")
         write_text_atomic(stderr_path, proc.stderr or "")
-        patch_artifacts.extend(
+        submission_artifacts.extend(
             [
                 artifact_for(
                     stdout_path,
@@ -326,48 +334,101 @@ class CommandExecutor:
             return ExecutionOutcome(
                 status=VerifyStatus.FAIL,
                 notes=f"exec_cmd_failed rc={proc.returncode}",
-                patch_artifacts=patch_artifacts,
+                patch_artifacts=list(submission_artifacts),
+                submission_artifacts=list(submission_artifacts),
                 sandbox_rel=sandbox_rel,
-                patch_kind="diff",
+                patch_kind="diff" if task.submission_kind == SubmissionKind.PATCH else "none",
+                submission_kind=task.submission_kind,
             )
 
-        try:
-            patch = build_patch_from_dirs(base_dir=self._workspace_dir, work_dir=work_dir)
-            if not patch.patch_text.strip():
+        patch_kind = "none"
+        patch_touched_paths: list[str] = []
+        submission_text_for_judges: str | None = None
+        if task.submission_kind == SubmissionKind.PATCH:
+            patch_kind = "diff"
+            try:
+                patch = build_patch_from_dirs(base_dir=self._workspace_dir, work_dir=work_dir)
+                if not patch.patch_text.strip():
+                    return ExecutionOutcome(
+                        status=VerifyStatus.FAIL,
+                        notes="no workspace changes produced",
+                        patch_artifacts=list(submission_artifacts),
+                        submission_artifacts=list(submission_artifacts),
+                        sandbox_rel=sandbox_rel,
+                        patch_kind=patch_kind,
+                        submission_kind=task.submission_kind,
+                    )
+                patch_touched_paths = list(patch.touched_paths)
+                enforce_allowed_paths(paths=patch_touched_paths, allowed=task.allowed_paths)
+            except Exception as e:
+                err_path = sandbox_dir / "patch_build_error.txt"
+                write_text_atomic(err_path, f"{type(e).__name__}: {e}\n")
+                submission_artifacts.append(
+                    artifact_for(
+                        err_path,
+                        name="patch_build_error.txt",
+                        media_type="text/plain",
+                        root=self._run_dir,
+                    )
+                )
                 return ExecutionOutcome(
                     status=VerifyStatus.FAIL,
-                    notes="no workspace changes produced",
-                    patch_artifacts=patch_artifacts,
+                    notes="patch_build_failed",
+                    patch_artifacts=list(submission_artifacts),
+                    submission_artifacts=list(submission_artifacts),
                     sandbox_rel=sandbox_rel,
-                    patch_kind="diff",
+                    patch_kind=patch_kind,
+                    submission_kind=task.submission_kind,
                 )
-            enforce_allowed_paths(paths=list(patch.touched_paths), allowed=task.allowed_paths)
-        except Exception as e:
-            err_path = sandbox_dir / "patch_build_error.txt"
-            write_text_atomic(err_path, f"{type(e).__name__}: {e}\n")
-            patch_artifacts.append(
-                artifact_for(
-                    err_path,
-                    name="patch_build_error.txt",
-                    media_type="text/plain",
-                    root=self._run_dir,
-                )
-            )
-            return ExecutionOutcome(
-                status=VerifyStatus.FAIL,
-                notes="patch_build_failed",
-                patch_artifacts=patch_artifacts,
-                sandbox_rel=sandbox_rel,
-                patch_kind="diff",
-            )
 
-        patch_path = sandbox_dir / "patch.diff"
-        write_text_atomic(patch_path, patch.patch_text)
-        patch_artifacts.append(
-            artifact_for(
-                patch_path, name="patch.diff", media_type="text/x-diff", root=self._run_dir
+            patch_path = sandbox_dir / "patch.diff"
+            write_text_atomic(patch_path, patch.patch_text)
+            submission_artifacts.append(
+                artifact_for(
+                    patch_path, name="patch.diff", media_type="text/x-diff", root=self._run_dir
+                )
             )
-        )
+        else:
+            try:
+                normalized = normalize_submission_output(
+                    raw_output=proc.stdout or "",
+                    kind=task.submission_kind,
+                )
+                submission_path, _ = persist_submission(
+                    sandbox_dir=sandbox_dir,
+                    work_dir=work_dir,
+                    normalized_output=normalized,
+                    kind=task.submission_kind,
+                )
+                submission_artifacts.append(
+                    artifact_for(
+                        submission_path,
+                        name=submission_path.name,
+                        media_type=submission_media_type(kind=task.submission_kind),
+                        root=self._run_dir,
+                    )
+                )
+                submission_text_for_judges = normalized
+            except Exception as e:
+                err_path = sandbox_dir / "submission_error.txt"
+                write_text_atomic(err_path, f"{type(e).__name__}: {e}\n")
+                submission_artifacts.append(
+                    artifact_for(
+                        err_path,
+                        name="submission_error.txt",
+                        media_type="text/plain",
+                        root=self._run_dir,
+                    )
+                )
+                return ExecutionOutcome(
+                    status=VerifyStatus.FAIL,
+                    notes="submission_parse_failed",
+                    patch_artifacts=list(submission_artifacts),
+                    submission_artifacts=list(submission_artifacts),
+                    sandbox_rel=sandbox_rel,
+                    patch_kind=patch_kind,
+                    submission_kind=task.submission_kind,
+                )
 
         public: list[CommandResult] = []
         hidden: list[CommandResult] = []
@@ -447,21 +508,23 @@ class CommandExecutor:
                 )
                 required_passes = max(1, min(required_passes, len(judge_workers)))
 
-                diff_text = build_unified_diff_summary(
-                    workspace_dir=self._workspace_dir,
-                    sandbox_dir=work_dir,
-                    rel_paths=list(patch.touched_paths),
-                )
-                diff_path = sandbox_dir / "diff_for_judges.diff"
-                write_text_atomic(diff_path, diff_text)
-                verification_artifacts.append(
-                    artifact_for(
-                        diff_path,
-                        name="diff_for_judges.diff",
-                        media_type="text/x-diff",
-                        root=self._run_dir,
+                diff_text = "(non-patch submission)"
+                if task.submission_kind == SubmissionKind.PATCH:
+                    diff_text = build_unified_diff_summary(
+                        workspace_dir=self._workspace_dir,
+                        sandbox_dir=work_dir,
+                        rel_paths=patch_touched_paths,
                     )
-                )
+                    diff_path = sandbox_dir / "diff_for_judges.diff"
+                    write_text_atomic(diff_path, diff_text)
+                    verification_artifacts.append(
+                        artifact_for(
+                            diff_path,
+                            name="diff_for_judges.diff",
+                            media_type="text/x-diff",
+                            root=self._run_dir,
+                        )
+                    )
 
                 try:
                     judge_status, judge_calls = run_judges_with_workers(
@@ -472,6 +535,8 @@ class CommandExecutor:
                         public=public,
                         hidden=hidden,
                         diff_text=diff_text,
+                        submission_kind=task.submission_kind,
+                        submission_text=submission_text_for_judges,
                         required_passes=required_passes,
                         max_output_tokens=self._settings.judge_max_output_tokens,
                         cwd=work_dir,
@@ -536,10 +601,12 @@ class CommandExecutor:
         return ExecutionOutcome(
             status=status,
             notes="exec_cmd_ok",
-            patch_artifacts=patch_artifacts,
+            patch_artifacts=list(submission_artifacts),
+            submission_artifacts=list(submission_artifacts),
             verification_artifacts=verification_artifacts,
             sandbox_rel=sandbox_rel,
-            patch_kind="diff",
+            patch_kind=patch_kind,
+            submission_kind=task.submission_kind,
         )
 
     def integrate(
@@ -554,6 +621,8 @@ class CommandExecutor:
         _ = worker, task, bid, round_id
         if outcome.status != VerifyStatus.PASS:
             return outcome
+        if task.submission_kind != SubmissionKind.PATCH:
+            return outcome
 
         by_name = {a.name: a for a in list(outcome.patch_artifacts)}
         a = by_name.get("patch.diff")
@@ -562,9 +631,11 @@ class CommandExecutor:
                 status=VerifyStatus.INFRA,
                 notes="missing_patch_diff_for_integration",
                 patch_artifacts=list(outcome.patch_artifacts),
+                submission_artifacts=list(outcome.submission_artifacts),
                 verification_artifacts=list(outcome.verification_artifacts),
                 sandbox_rel=outcome.sandbox_rel,
                 patch_kind=outcome.patch_kind,
+                submission_kind=outcome.submission_kind,
                 llm_usage=outcome.llm_usage,
             )
 
@@ -598,9 +669,11 @@ class CommandExecutor:
                 status=VerifyStatus.INFRA,
                 notes="workspace_apply_failed",
                 patch_artifacts=list(outcome.patch_artifacts),
+                submission_artifacts=list(outcome.submission_artifacts),
                 verification_artifacts=verification_artifacts,
                 sandbox_rel=outcome.sandbox_rel,
                 patch_kind=outcome.patch_kind,
+                submission_kind=outcome.submission_kind,
                 llm_usage=outcome.llm_usage,
             )
 
