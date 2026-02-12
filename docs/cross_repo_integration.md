@@ -60,6 +60,8 @@ Useful commands:
 - `uv run agent-economy report --run-dir <run_dir>`
 - `uv run agent-economy dashboard --run-dir <run_dir>`
 
+For non-code tasks, set `--submission-kind text` or `--submission-kind json`.
+
 ---
 
 ## Surface B: Engine API (programmatic)

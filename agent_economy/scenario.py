@@ -108,6 +108,7 @@ def load_scenario(path: Path) -> ScenarioSpec:
             deps=[str(d) for d in (raw.get("deps") or [])],
             bounty=int(raw.get("bounty") or 1),
             verify_mode=verify_mode,
+            submission_kind=str(raw.get("submission_kind") or "patch"),
             acceptance=_parse_commands(raw.get("acceptance")),
             hidden_acceptance=_parse_commands(raw.get("hidden_acceptance")),
             judges=judges,

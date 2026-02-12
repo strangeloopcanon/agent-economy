@@ -87,8 +87,13 @@ failure_penalty = 0.5*bounty*clamp((rep - 0.5)/0.75, 0, 1)
 
 ### Execution & Settlement
 *   **Sandboxing**: Every attempt runs in a fresh copy of the workspace.
+*   **Submission Kinds**: `patch` (default), `text`, or `json` via `--submission-kind`.
 *   **Payment**: Workers pay token costs for every attempt. They only get paid on `PASS` (either their `ask`, or the fixed `bounty` if you run with `--payment-rule bounty`).
 *   **Settlement Modes**: `commands` (exit code 0), `judges` (LLM vote), `manual` (human review).
+
+For non-patch tasks, the worker output is persisted in the sandbox workspace as:
+- `.agent_economy/submission.txt` for `--submission-kind text`
+- `.agent_economy/submission.json` for `--submission-kind json`
 
 ### When There Is No `pytest`
 
@@ -198,6 +203,17 @@ agent-economy task "Fix the failing tests" \
   --accept "python -m pytest -q" \
   --concurrency 2 \
   --rounds 8
+```
+
+### Text-Answer Task (No Code Patch)
+```bash
+agent-economy task "Explain Raft consensus and failure recovery tradeoffs" \
+  --submission-kind text \
+  --verify-mode judges \
+  --judge-worker gpt-5.2-auto \
+  --judge-worker gpt-5-mini \
+  --no-self-judge \
+  --rounds 3
 ```
 
 ### Plan Revision

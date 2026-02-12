@@ -9,7 +9,7 @@ from agent_economy.engine import ExecutionOutcome, ReadyTask
 from agent_economy.judges import build_unified_diff_summary, run_judges_with_workers
 from agent_economy.llm_router import LLMRouter
 from agent_economy.openai_bidder import DEFAULT_PERSONAS
-from agent_economy.prompts import patch_prompt, system_prompt
+from agent_economy.prompts import patch_prompt, submission_prompt, system_prompt
 from agent_economy.sandbox import (
     Sandbox,
     apply_file_blocks,
@@ -26,12 +26,18 @@ from agent_economy.sandbox import (
 )
 from agent_economy.schemas import (
     Bid,
+    DiscussionMessage,
+    SubmissionKind,
     TaskRuntime,
     TaskSpec,
     VerifyMode,
     VerifyStatus,
     WorkerRuntime,
-    DiscussionMessage,
+)
+from agent_economy.submission import (
+    normalize_submission_output,
+    persist_submission,
+    submission_media_type,
 )
 from agent_economy.verify import CommandResult, all_passed, run_commands
 from agent_economy.worker_refs import resolve_worker_refs
@@ -130,12 +136,17 @@ class OpenAIExecutor:
 
         persona = DEFAULT_PERSONAS.get(worker.worker_id)
         sys = system_prompt(worker=worker, persona=None if persona is None else persona.persona)
-        user = patch_prompt(task=ready, files=hint_files, discussion_history=discussion_history)
+        if task.submission_kind == SubmissionKind.PATCH:
+            user = patch_prompt(task=ready, files=hint_files, discussion_history=discussion_history)
+        else:
+            user = submission_prompt(
+                task=ready, files=hint_files, discussion_history=discussion_history
+            )
 
         write_text_atomic(sandbox_dir / "prompt_system.txt", sys)
         write_text_atomic(sandbox_dir / "prompt_user.txt", user)
 
-        patch_artifacts = [
+        submission_artifacts = [
             artifact_for(
                 sandbox_dir / "prompt_system.txt",
                 name="prompt_system.txt",
@@ -160,7 +171,7 @@ class OpenAIExecutor:
         except Exception as e:
             err_path = sandbox_dir / "llm_error.txt"
             write_text_atomic(err_path, f"{type(e).__name__}: {e}\n")
-            patch_artifacts.append(
+            submission_artifacts.append(
                 artifact_for(
                     err_path,
                     name="llm_error.txt",
@@ -171,9 +182,11 @@ class OpenAIExecutor:
             return ExecutionOutcome(
                 status=VerifyStatus.INFRA,
                 notes="llm_call_failed",
-                patch_artifacts=patch_artifacts,
+                patch_artifacts=list(submission_artifacts),
+                submission_artifacts=list(submission_artifacts),
                 sandbox_rel=sandbox_rel,
                 patch_kind="none",
+                submission_kind=task.submission_kind,
             )
 
         llm_usage = {
@@ -183,7 +196,7 @@ class OpenAIExecutor:
         }
 
         write_text_atomic(sandbox_dir / "model_raw.txt", raw)
-        patch_artifacts.append(
+        submission_artifacts.append(
             artifact_for(
                 sandbox_dir / "model_raw.txt",
                 name="model_raw.txt",
@@ -192,99 +205,159 @@ class OpenAIExecutor:
             )
         )
 
-        # Parse patch output (diff preferred; file blocks accepted).
+        # Build submission artifacts.
         applied_kind = "none"
         touched: list[str] = []
-        try:
-            if "diff --git " in raw:
-                patch_text = extract_git_diff(raw)
-                diff_changes = parse_patch_changes(patch_text)
-                touched = sorted(
-                    {p for ch in diff_changes for p in [ch.old_path, ch.new_path] if p is not None}
-                )
-                enforce_allowed_paths(paths=touched, allowed=task.allowed_paths)
-                patch_path = apply_unified_diff(
-                    patch_text=patch_text, cwd=work_dir, patch_path=sandbox_dir / "patch.diff"
-                )
-                patch_artifacts.append(
-                    artifact_for(
-                        patch_path, name="patch.diff", media_type="text/x-diff", root=self._run_dir
+        submission_text_for_judges: str | None = None
+        if task.submission_kind == SubmissionKind.PATCH:
+            try:
+                if "diff --git " in raw:
+                    patch_text = extract_git_diff(raw)
+                    diff_changes = parse_patch_changes(patch_text)
+                    touched = sorted(
+                        {
+                            p
+                            for ch in diff_changes
+                            for p in [ch.old_path, ch.new_path]
+                            if p is not None
+                        }
                     )
-                )
-                applied_kind = "diff"
-            elif "BEGIN_FILE " in raw:
-                files = extract_file_blocks(raw)
-                touched = sorted(files.keys())
-                enforce_allowed_paths(paths=touched, allowed=task.allowed_paths)
-                apply_file_blocks(files=files, cwd=work_dir)
-                fileblocks_path = sandbox_dir / "patch_files.json"
-                write_text_atomic(
-                    fileblocks_path, json.dumps(files, ensure_ascii=False, indent=2) + "\n"
-                )
-                patch_artifacts.append(
-                    artifact_for(
-                        fileblocks_path,
-                        name="patch_files.json",
-                        media_type="application/json",
-                        root=self._run_dir,
+                    enforce_allowed_paths(paths=touched, allowed=task.allowed_paths)
+                    patch_path = apply_unified_diff(
+                        patch_text=patch_text, cwd=work_dir, patch_path=sandbox_dir / "patch.diff"
                     )
-                )
-                patch = build_patch_from_dirs(base_dir=self._workspace_dir, work_dir=work_dir)
-                if not patch.patch_text.strip():
+                    submission_artifacts.append(
+                        artifact_for(
+                            patch_path,
+                            name="patch.diff",
+                            media_type="text/x-diff",
+                            root=self._run_dir,
+                        )
+                    )
+                    applied_kind = "diff"
+                elif "BEGIN_FILE " in raw:
+                    files = extract_file_blocks(raw)
+                    touched = sorted(files.keys())
+                    enforce_allowed_paths(paths=touched, allowed=task.allowed_paths)
+                    apply_file_blocks(files=files, cwd=work_dir)
+                    fileblocks_path = sandbox_dir / "patch_files.json"
+                    write_text_atomic(
+                        fileblocks_path, json.dumps(files, ensure_ascii=False, indent=2) + "\n"
+                    )
+                    submission_artifacts.append(
+                        artifact_for(
+                            fileblocks_path,
+                            name="patch_files.json",
+                            media_type="application/json",
+                            root=self._run_dir,
+                        )
+                    )
+                    patch = build_patch_from_dirs(base_dir=self._workspace_dir, work_dir=work_dir)
+                    if not patch.patch_text.strip():
+                        return ExecutionOutcome(
+                            status=VerifyStatus.FAIL,
+                            notes="no workspace changes produced",
+                            patch_artifacts=list(submission_artifacts),
+                            submission_artifacts=list(submission_artifacts),
+                            sandbox_rel=sandbox_rel,
+                            patch_kind="files",
+                            submission_kind=task.submission_kind,
+                            llm_usage=llm_usage,
+                        )
+                    enforce_allowed_paths(
+                        paths=list(patch.touched_paths), allowed=task.allowed_paths
+                    )
+                    patch_path = sandbox_dir / "patch.diff"
+                    write_text_atomic(patch_path, patch.patch_text)
+                    submission_artifacts.append(
+                        artifact_for(
+                            patch_path,
+                            name="patch.diff",
+                            media_type="text/x-diff",
+                            root=self._run_dir,
+                        )
+                    )
+                    applied_kind = "files"
+                else:
                     return ExecutionOutcome(
                         status=VerifyStatus.FAIL,
-                        notes="no workspace changes produced",
-                        patch_artifacts=patch_artifacts,
+                        notes="no patch found (expected diff --git or BEGIN_FILE blocks)",
+                        patch_artifacts=list(submission_artifacts),
+                        submission_artifacts=list(submission_artifacts),
                         sandbox_rel=sandbox_rel,
-                        patch_kind="files",
+                        patch_kind="none",
+                        submission_kind=task.submission_kind,
                         llm_usage=llm_usage,
                     )
-                enforce_allowed_paths(paths=list(patch.touched_paths), allowed=task.allowed_paths)
-                patch_path = sandbox_dir / "patch.diff"
-                write_text_atomic(patch_path, patch.patch_text)
-                patch_artifacts.append(
+            except Exception as e:
+                err_path = sandbox_dir / "patch_apply_error.txt"
+                msg = f"{type(e).__name__}: {e}\n"
+                if isinstance(e, subprocess.CalledProcessError):
+                    if e.stderr:
+                        msg += f"\n--- stderr ---\n{e.stderr}\n"
+                    if e.stdout:
+                        msg += f"\n--- stdout ---\n{e.stdout}\n"
+                write_text_atomic(err_path, msg)
+                submission_artifacts.append(
                     artifact_for(
-                        patch_path,
-                        name="patch.diff",
-                        media_type="text/x-diff",
+                        err_path,
+                        name="patch_apply_error.txt",
+                        media_type="text/plain",
                         root=self._run_dir,
                     )
                 )
-                applied_kind = "files"
-            else:
                 return ExecutionOutcome(
                     status=VerifyStatus.FAIL,
-                    notes="no patch found (expected diff --git or BEGIN_FILE blocks)",
-                    patch_artifacts=patch_artifacts,
+                    notes="patch apply failed",
+                    patch_artifacts=list(submission_artifacts),
+                    submission_artifacts=list(submission_artifacts),
                     sandbox_rel=sandbox_rel,
-                    patch_kind="none",
+                    patch_kind=applied_kind,
+                    submission_kind=task.submission_kind,
                     llm_usage=llm_usage,
                 )
-        except Exception as e:
-            err_path = sandbox_dir / "patch_apply_error.txt"
-            msg = f"{type(e).__name__}: {e}\n"
-            if isinstance(e, subprocess.CalledProcessError):
-                if e.stderr:
-                    msg += f"\n--- stderr ---\n{e.stderr}\n"
-                if e.stdout:
-                    msg += f"\n--- stdout ---\n{e.stdout}\n"
-            write_text_atomic(err_path, msg)
-            patch_artifacts.append(
-                artifact_for(
-                    err_path,
-                    name="patch_apply_error.txt",
-                    media_type="text/plain",
-                    root=self._run_dir,
+        else:
+            try:
+                normalized = normalize_submission_output(
+                    raw_output=raw,
+                    kind=task.submission_kind,
                 )
-            )
-            return ExecutionOutcome(
-                status=VerifyStatus.FAIL,
-                notes="patch apply failed",
-                patch_artifacts=patch_artifacts,
-                sandbox_rel=sandbox_rel,
-                patch_kind=applied_kind,
-                llm_usage=llm_usage,
-            )
+                submission_path, _ = persist_submission(
+                    sandbox_dir=sandbox_dir,
+                    work_dir=work_dir,
+                    normalized_output=normalized,
+                    kind=task.submission_kind,
+                )
+                submission_artifacts.append(
+                    artifact_for(
+                        submission_path,
+                        name=submission_path.name,
+                        media_type=submission_media_type(kind=task.submission_kind),
+                        root=self._run_dir,
+                    )
+                )
+                submission_text_for_judges = normalized
+            except Exception as e:
+                err_path = sandbox_dir / "submission_error.txt"
+                write_text_atomic(err_path, f"{type(e).__name__}: {e}\n")
+                submission_artifacts.append(
+                    artifact_for(
+                        err_path,
+                        name="submission_error.txt",
+                        media_type="text/plain",
+                        root=self._run_dir,
+                    )
+                )
+                return ExecutionOutcome(
+                    status=VerifyStatus.FAIL,
+                    notes="submission_parse_failed",
+                    patch_artifacts=list(submission_artifacts),
+                    submission_artifacts=list(submission_artifacts),
+                    sandbox_rel=sandbox_rel,
+                    patch_kind="none",
+                    submission_kind=task.submission_kind,
+                    llm_usage=llm_usage,
+                )
 
         public: list[CommandResult] = []
         hidden: list[CommandResult] = []
@@ -361,21 +434,23 @@ class OpenAIExecutor:
                 )
                 required_passes = max(1, min(required_passes, len(judge_workers)))
 
-                diff_text = build_unified_diff_summary(
-                    workspace_dir=self._workspace_dir,
-                    sandbox_dir=work_dir,
-                    rel_paths=touched,
-                )
-                diff_path = sandbox_dir / "diff_for_judges.diff"
-                write_text_atomic(diff_path, diff_text)
-                verification_artifacts.append(
-                    artifact_for(
-                        diff_path,
-                        name="diff_for_judges.diff",
-                        media_type="text/x-diff",
-                        root=self._run_dir,
+                diff_text = "(non-patch submission)"
+                if task.submission_kind == SubmissionKind.PATCH:
+                    diff_text = build_unified_diff_summary(
+                        workspace_dir=self._workspace_dir,
+                        sandbox_dir=work_dir,
+                        rel_paths=touched,
                     )
-                )
+                    diff_path = sandbox_dir / "diff_for_judges.diff"
+                    write_text_atomic(diff_path, diff_text)
+                    verification_artifacts.append(
+                        artifact_for(
+                            diff_path,
+                            name="diff_for_judges.diff",
+                            media_type="text/x-diff",
+                            root=self._run_dir,
+                        )
+                    )
 
                 try:
                     judge_status, judge_calls = run_judges_with_workers(
@@ -386,6 +461,8 @@ class OpenAIExecutor:
                         public=public,
                         hidden=hidden,
                         diff_text=diff_text,
+                        submission_kind=task.submission_kind,
+                        submission_text=submission_text_for_judges,
                         required_passes=required_passes,
                         max_output_tokens=self._settings.judge_max_output_tokens,
                         cwd=work_dir,
@@ -450,10 +527,12 @@ class OpenAIExecutor:
         return ExecutionOutcome(
             status=status,
             notes=f"patch_applied={applied_kind}",
-            patch_artifacts=patch_artifacts,
+            patch_artifacts=list(submission_artifacts),
+            submission_artifacts=list(submission_artifacts),
             verification_artifacts=verification_artifacts,
             sandbox_rel=sandbox_rel,
             patch_kind=applied_kind,
+            submission_kind=task.submission_kind,
             llm_usage=llm_usage,
         )
 
@@ -469,6 +548,8 @@ class OpenAIExecutor:
         _ = worker, bid, round_id
         if outcome.status != VerifyStatus.PASS:
             return outcome
+        if task.submission_kind != SubmissionKind.PATCH:
+            return outcome
 
         by_name = {a.name: a for a in list(outcome.patch_artifacts)}
         a = by_name.get("patch.diff")
@@ -477,9 +558,11 @@ class OpenAIExecutor:
                 status=VerifyStatus.INFRA,
                 notes="missing_patch_diff_for_integration",
                 patch_artifacts=list(outcome.patch_artifacts),
+                submission_artifacts=list(outcome.submission_artifacts),
                 verification_artifacts=list(outcome.verification_artifacts),
                 sandbox_rel=outcome.sandbox_rel,
                 patch_kind=outcome.patch_kind,
+                submission_kind=outcome.submission_kind,
                 llm_usage=outcome.llm_usage,
             )
 
@@ -513,9 +596,11 @@ class OpenAIExecutor:
                 status=VerifyStatus.INFRA,
                 notes="workspace_apply_failed",
                 patch_artifacts=list(outcome.patch_artifacts),
+                submission_artifacts=list(outcome.submission_artifacts),
                 verification_artifacts=verification_artifacts,
                 sandbox_rel=outcome.sandbox_rel,
                 patch_kind=outcome.patch_kind,
+                submission_kind=outcome.submission_kind,
                 llm_usage=outcome.llm_usage,
             )
 

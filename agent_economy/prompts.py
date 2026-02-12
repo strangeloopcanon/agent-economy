@@ -1,7 +1,14 @@
 from __future__ import annotations
 
 from agent_economy.engine import ReadyTask
-from agent_economy.schemas import PaymentRule, VerifyMode, WorkerRuntime, DiscussionMessage
+from agent_economy.schemas import (
+    DiscussionMessage,
+    PaymentRule,
+    SubmissionKind,
+    VerifyMode,
+    WorkerRuntime,
+)
+from agent_economy.submission import submission_workspace_relpath
 
 
 def system_prompt(*, worker: WorkerRuntime, persona: str | None = None) -> str:
@@ -90,6 +97,7 @@ def bid_prompt(
             lines.append("  verification: judges (model voting on diff + outputs)")
         elif spec.verify_mode == VerifyMode.MANUAL:
             lines.append("  verification: manual review")
+        lines.append(f"  submission: {spec.submission_kind.value}")
     lines.append("")
     lines.append(
         """Return JSON:
@@ -163,4 +171,65 @@ def patch_prompt(
         lines.append(f"\n--- FILE: {path} ---\n{files[path]}")
     lines.append("")
     lines.append("Output the patch now (BEGIN_FILE blocks preferred) and nothing else.")
+    return "\n".join(lines)
+
+
+def submission_prompt(
+    *,
+    task: ReadyTask,
+    files: dict[str, str],
+    discussion_history: list[DiscussionMessage],
+) -> str:
+    spec = task.spec
+    if spec.submission_kind not in {SubmissionKind.TEXT, SubmissionKind.JSON}:
+        raise ValueError(f"submission_prompt requires text/json kind, got {spec.submission_kind}")
+
+    lines: list[str] = []
+    lines.append("You are assigned a task. Produce the best possible final answer.")
+    lines.append(
+        "Assume there may be hidden checks; satisfy the intent robustly, not just visible checks."
+    )
+    lines.append("")
+    lines.append("Submission output format:")
+    if spec.submission_kind == SubmissionKind.JSON:
+        lines.append("- Output valid JSON only.")
+        lines.append("- Do not wrap in markdown fences.")
+    else:
+        lines.append("- Output plain text only.")
+        lines.append("- Do not wrap in markdown fences.")
+    lines.append(
+        f"- Your output will be saved to {submission_workspace_relpath(kind=spec.submission_kind)} "
+        "inside the sandbox workspace before verification runs."
+    )
+    lines.append("")
+    lines.append(f"Task: {spec.id} — {spec.title}")
+    if spec.description.strip():
+        lines.append(spec.description.strip())
+    lines.append("")
+
+    if discussion_history:
+        lines.append("Public Discussion Board:")
+        lines.append("(Review this for any updates or warnings relevant to your task.)")
+        for msg in discussion_history[-20:]:
+            lines.append(f"[{msg.ts.strftime('%H:%M:%S')}] {msg.sender}: {msg.message}")
+        lines.append("")
+
+    if spec.verify_mode == VerifyMode.JUDGES:
+        lines.append("Verification: independent model judges will review your submission.")
+        lines.append("")
+        lines.append(
+            "Settlement: passing judges is provisional; part of payout is held back until the whole run completes."
+        )
+        lines.append("")
+    lines.append("Cost: usage_cost (token cost) is debited for this attempt regardless of outcome.")
+    lines.append("")
+    lines.append("Public acceptance commands (hidden checks may also run):")
+    for cmd in spec.acceptance:
+        lines.append(f"- {cmd.cmd}")
+    lines.append("")
+    lines.append("You are given these files:")
+    for path in sorted(files.keys()):
+        lines.append(f"\n--- FILE: {path} ---\n{files[path]}")
+    lines.append("")
+    lines.append("Output the final submission now and nothing else.")
     return "\n".join(lines)

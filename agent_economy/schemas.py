@@ -56,6 +56,12 @@ class VerifyMode(str, Enum):
     JUDGES = "judges"
 
 
+class SubmissionKind(str, Enum):
+    PATCH = "patch"
+    TEXT = "text"
+    JSON = "json"
+
+
 class VerifyStatus(str, Enum):
     PASS = "PASS"
     FAIL = "FAIL"
@@ -125,6 +131,7 @@ class TaskSpec(BaseModel):
     bounty: int = Field(ge=1)
     max_attempts: int = Field(default=3, ge=1, le=20)
     verify_mode: VerifyMode = VerifyMode.COMMANDS
+    submission_kind: SubmissionKind = SubmissionKind.PATCH
     acceptance: list[CommandSpec] = Field(default_factory=list)
     hidden_acceptance: list[CommandSpec] = Field(default_factory=list)
     judges: JudgeSpec | None = None
