@@ -176,3 +176,8 @@ uv run pytest -q
 - Public import surface is exposed from `agent_economy/__init__.py`.
 - CLI entrypoint is `agent-economy` from `pyproject.toml` scripts.
 - For local-model usage (Ollama/Qwen), keep worker definitions in your consuming repo and point `model_ref` to the provider-specific reference.
+- Provider prefixes for model workers:
+  - OpenAI: `openai:gpt-5-mini` (or bare `gpt-5-mini`)
+  - Ollama: `ollama:qwen3:8b` (or `local:qwen3:8b`)
+  - Anthropic: `anthropic:claude-sonnet-4-5` (or `claude:claude-sonnet-4-5`)
+  - Gemini: `google:gemini-2.5-pro` (or `gemini:gemini-2.5-pro`)

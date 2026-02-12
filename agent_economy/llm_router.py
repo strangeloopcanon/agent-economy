@@ -5,6 +5,8 @@ from typing import TypeVar
 
 from pydantic import BaseModel
 
+from agent_economy.llm_anthropic import AnthropicJSONClient
+from agent_economy.llm_google import GoogleJSONClient
 from agent_economy.llm_ollama import OllamaJSONClient
 from agent_economy.llm_openai import OpenAIJSONClient, Usage
 from agent_economy.model_refs import split_provider_model
@@ -16,6 +18,8 @@ TModel = TypeVar("TModel", bound=BaseModel)
 class LLMRouter:
     openai: OpenAIJSONClient | None = None
     ollama: OllamaJSONClient | None = None
+    anthropic: AnthropicJSONClient | None = None
+    google: GoogleJSONClient | None = None
 
     def call_text(
         self,
@@ -47,6 +51,32 @@ class LLMRouter:
             if self.ollama is None:
                 raise ValueError("missing Ollama client (set OLLAMA_BASE_URL)")
             return self.ollama.call_text(
+                model=model,
+                system=system,
+                user=user,
+                temperature=temperature,
+                max_output_tokens=max_output_tokens,
+                reasoning_effort=reasoning_effort,
+                text_verbosity=text_verbosity,
+                max_retries=max_retries,
+            )
+        if provider == "anthropic":
+            if self.anthropic is None:
+                raise ValueError("missing Anthropic client (set ANTHROPIC_API_KEY)")
+            return self.anthropic.call_text(
+                model=model,
+                system=system,
+                user=user,
+                temperature=temperature,
+                max_output_tokens=max_output_tokens,
+                reasoning_effort=reasoning_effort,
+                text_verbosity=text_verbosity,
+                max_retries=max_retries,
+            )
+        if provider == "google":
+            if self.google is None:
+                raise ValueError("missing Google client (set GOOGLE_API_KEY or GEMINI_API_KEY)")
+            return self.google.call_text(
                 model=model,
                 system=system,
                 user=user,
@@ -95,6 +125,36 @@ class LLMRouter:
             if self.ollama is None:
                 raise ValueError("missing Ollama client (set OLLAMA_BASE_URL)")
             resp, usage, raw = self.ollama.call_json(
+                model=model,
+                system=system,
+                user=user,
+                schema=schema,
+                temperature=temperature,
+                max_output_tokens=max_output_tokens,
+                reasoning_effort=reasoning_effort,
+                text_verbosity=text_verbosity,
+                max_retries=max_retries,
+            )
+            return resp, usage, raw
+        if provider == "anthropic":
+            if self.anthropic is None:
+                raise ValueError("missing Anthropic client (set ANTHROPIC_API_KEY)")
+            resp, usage, raw = self.anthropic.call_json(
+                model=model,
+                system=system,
+                user=user,
+                schema=schema,
+                temperature=temperature,
+                max_output_tokens=max_output_tokens,
+                reasoning_effort=reasoning_effort,
+                text_verbosity=text_verbosity,
+                max_retries=max_retries,
+            )
+            return resp, usage, raw
+        if provider == "google":
+            if self.google is None:
+                raise ValueError("missing Google client (set GOOGLE_API_KEY or GEMINI_API_KEY)")
+            resp, usage, raw = self.google.call_json(
                 model=model,
                 system=system,
                 user=user,
