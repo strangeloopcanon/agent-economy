@@ -9,6 +9,8 @@ description = "Task-market clearinghouse kernel (bids -> clear -> patch/verify -
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+  "anthropic>=0.74.0",
+  "google-genai>=1.47.0",
   "openai>=1.0.0",
   "pydantic>=2.0.0",
   "python-dotenv>=1.0.0",

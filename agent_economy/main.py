@@ -24,6 +24,8 @@ from agent_economy.engine import (
     _penalty_amount,
 )
 from agent_economy.ledger import HashChainedLedger
+from agent_economy.llm_anthropic import AnthropicJSONClient
+from agent_economy.llm_google import GoogleJSONClient
 from agent_economy.llm_openai import OpenAIJSONClient
 from agent_economy.llm_ollama import OllamaJSONClient
 from agent_economy.llm_router import LLMRouter
@@ -202,11 +204,30 @@ def _ollama_client(*, settings: InstitutionSettings) -> OllamaJSONClient:
     return OllamaJSONClient(base_url=settings.ollama_base_url)
 
 
+def _anthropic_client(*, settings: InstitutionSettings) -> AnthropicJSONClient | None:
+    if not settings.anthropic_api_key:
+        return None
+    return AnthropicJSONClient(
+        api_key=settings.anthropic_api_key,
+        base_url=settings.anthropic_base_url,
+    )
+
+
+def _google_client(*, settings: InstitutionSettings) -> GoogleJSONClient | None:
+    if not settings.google_api_key:
+        return None
+    return GoogleJSONClient(api_key=settings.google_api_key)
+
+
 def _llm_supports_provider(*, llm: LLMRouter, provider: str) -> bool:
     if provider == "openai":
         return llm.openai is not None
     if provider == "ollama":
         return llm.ollama is not None
+    if provider == "anthropic":
+        return llm.anthropic is not None
+    if provider == "google":
+        return llm.google is not None
     return False
 
 
@@ -229,12 +250,14 @@ def _llm_router_for_workers(
     if not providers:
         return LLMRouter()
 
-    unsupported = sorted(p for p in providers if p not in {"openai", "ollama"})
+    unsupported = sorted(
+        p for p in providers if p not in {"openai", "ollama", "anthropic", "google"}
+    )
     if unsupported:
         raise SystemExit(
             "unsupported model providers for model workers: "
             + ", ".join(unsupported)
-            + " (supported: openai, ollama)"
+            + " (supported: openai, ollama, anthropic, google)"
         )
 
     openai_client = _openai_client(settings=settings) if "openai" in providers else None
@@ -242,7 +265,22 @@ def _llm_router_for_workers(
         raise SystemExit("OPENAI_API_KEY is required for OpenAI model workers")
 
     ollama_client = _ollama_client(settings=settings) if "ollama" in providers else None
-    return LLMRouter(openai=openai_client, ollama=ollama_client)
+    anthropic_client = _anthropic_client(settings=settings) if "anthropic" in providers else None
+    if "anthropic" in providers and anthropic_client is None:
+        raise SystemExit("ANTHROPIC_API_KEY is required for Anthropic model workers")
+
+    google_client = _google_client(settings=settings) if "google" in providers else None
+    if "google" in providers and google_client is None:
+        raise SystemExit(
+            "GOOGLE_API_KEY or GEMINI_API_KEY is required for Google/Gemini model workers"
+        )
+
+    return LLMRouter(
+        openai=openai_client,
+        ollama=ollama_client,
+        anthropic=anthropic_client,
+        google=google_client,
+    )
 
 
 def _timeout_seconds_from_env(*, env_vars: tuple[str, ...], default: float | None) -> float | None:
@@ -782,6 +820,20 @@ def main(argv: list[str] | None = None) -> int:
             if worker_providers is not None and "ollama" in worker_providers:
                 print(f"✓ OLLAMA_BASE_URL configured: {settings.ollama_base_url}")
                 checks_passed += 1
+
+            if worker_providers is not None and "anthropic" in worker_providers:
+                if settings.anthropic_api_key:
+                    print("✓ ANTHROPIC_API_KEY is set")
+                    checks_passed += 1
+                else:
+                    issues.append("⚠ ANTHROPIC_API_KEY is not set")
+
+            if worker_providers is not None and "google" in worker_providers:
+                if settings.google_api_key:
+                    print("✓ GOOGLE_API_KEY/GEMINI_API_KEY is set")
+                    checks_passed += 1
+                else:
+                    issues.append("⚠ GOOGLE_API_KEY or GEMINI_API_KEY is not set")
 
             # Validate scenario if provided
             if args.scenario:

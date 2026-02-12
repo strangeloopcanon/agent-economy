@@ -182,6 +182,8 @@ Set these in `.env` or your shell to configure defaults:
 | Variable | Purpose |
 |----------|---------|
 | `OPENAI_API_KEY` | API key for OpenAI models |
+| `ANTHROPIC_API_KEY` | API key for Anthropic models (`anthropic:` / `claude:` model refs) |
+| `GOOGLE_API_KEY` / `GEMINI_API_KEY` | API key for Google Gemini models (`google:` / `gemini:` model refs) |
 | `AE_MODELS_JSON` | Default worker pool as JSON (alternative to `--workers`) |
 | `AE_PLANNER_WORKER` | Default planner worker/model ref |
 | `AE_JUDGES_JSON` | Default judge workers as JSON list |
@@ -234,6 +236,8 @@ Plug in local scripts, Anthropic models, or human-in-the-loop agents via `worker
 ```json
 [
   { "worker_id": "gpt-5-mini", "model_ref": "gpt-5-mini" },
+  { "worker_id": "claude-sonnet", "model_ref": "anthropic:claude-sonnet-4-5" },
+  { "worker_id": "gemini-pro", "model_ref": "google:gemini-2.5-pro" },
   { "worker_id": "local-script", "exec_cmd": "python my_agent.py", "bid_cmd": "python my_bidder.py" }
 ]
 ```

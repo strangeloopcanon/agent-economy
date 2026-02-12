@@ -25,6 +25,9 @@ def load_env() -> None:
 class InstitutionSettings:
     openai_api_key: str | None
     openai_base_url: str | None
+    anthropic_api_key: str | None
+    anthropic_base_url: str | None
+    google_api_key: str | None
     ollama_base_url: str
 
 
@@ -33,5 +36,8 @@ def load_settings() -> InstitutionSettings:
     return InstitutionSettings(
         openai_api_key=os.getenv("OPENAI_API_KEY") or None,
         openai_base_url=os.getenv("OPENAI_BASE_URL") or None,
+        anthropic_api_key=os.getenv("ANTHROPIC_API_KEY") or None,
+        anthropic_base_url=os.getenv("ANTHROPIC_BASE_URL") or None,
+        google_api_key=os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY") or None,
         ollama_base_url=(os.getenv("OLLAMA_BASE_URL") or "http://127.0.0.1:11434").strip(),
     )
